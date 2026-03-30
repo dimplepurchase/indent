@@ -942,7 +942,5 @@ def delete_user(uid):
     return redirect(url_for('settings'))
     
 if __name__ == "__main__":
-    # Railway passes the port as an environment variable
-    port = int(os.environ.get("PORT", 5000))
-    # You MUST bind to 0.0.0.0 so Railway can "see" the app
+    port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
