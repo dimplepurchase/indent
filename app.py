@@ -16,23 +16,23 @@ app.secret_key = 'secure_key_v38_pending_filter_sort'
 # --- AUTO LOGOUT CONFIGURATION ---
 app.permanent_session_lifetime = timedelta(minutes=15)
 
-# --- FIREBASE SETUP ---
+# --- FIREBASE SETUP START ---
+# Fetching the variable from Railway Environment Variables
+firebase_creds_json = os.getenv('FIREBASE_CONFIG')
+
 if firebase_creds_json:
-    # 2. Parse the string into a dictionary
-    cred_dict = json.loads(firebase_creds_json)
-    cred = credentials.Certificate(cred_dict)
-    
-    # 3. Initialize the app
-    firebase_admin.initialize_app(cred)
-    print("Firebase initialized successfully!")
+    try:
+        cred_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        print("Firebase successfully initialized!")
+    except Exception as e:
+        print(f"Error parsing JSON or initializing Firebase: {e}")
 else:
-    # This helps you debug if the variable is missing in Railway
-    print("Error: FIREBASE_CONFIG environment variable is missing!")
+    print("CRITICAL ERROR: FIREBASE_CONFIG environment variable not found!")
 
-# Now you can safely call the client
 db = firestore.client()
-
-# ==========================================
+# --- FIREBASE SETUP END ---============
 # 2. LOGIC & HELPERS
 # ==========================================
 
