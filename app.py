@@ -1,18 +1,18 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
-from flask import Flask, render_template_string, request, redirect, url_for, session, flash, send_file, g
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash, send_file
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import io
 import os
-import urllib.parse
-import base64
+import math
 import json
+
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
 app = Flask(__name__)
-app.secret_key = 'secure_key_v46_search_restored'
+app.secret_key = 'secure_key_v38_pending_filter_sort'
 
 # --- AUTO LOGOUT CONFIGURATION ---
 app.permanent_session_lifetime = timedelta(minutes=15)
@@ -34,7 +34,6 @@ else:
 
 db = firestore.client()
 # --- FIREBASE SETUP END ---============
-
 # ==========================================
 # 2. LOGIC & HELPERS
 # ==========================================
@@ -336,6 +335,7 @@ HTML_DASHBOARD_INDENT = """
                             <th>Item Details</th>
                             <th>Qty</th>
                             <th>Assigned</th>
+                            <th>Approved By</th>
                             <th>Status</th>
                             <th>Received</th>
                             <th class="no-print">Actions</th>
@@ -358,6 +358,7 @@ HTML_DASHBOARD_INDENT = """
                             <td><strong class="text-green">{{ indent.item }}</strong><div class="small text-muted fst-italic">{{ indent.reason }}</div></td>
                             <td class="fw-bold">{{ indent.quantity }} <span class="text-muted fw-normal">{{ indent.unit }}</span></td>
                             <td class="text-primary small fw-bold">{{ indent.assigned_to }}</td>
+                            <td class="text-success small fw-bold">{{ indent.approved_by_name if indent.approved_by_name else '-' }}</td>
                             <td>
                                 <span class="badge rounded-pill {% if indent.approval_status == 'Approved' %}bg-success{% elif indent.approval_status == 'Rejected' %}bg-danger{% else %}bg-warning text-dark{% endif %} mb-1 d-block">{{ indent.approval_status }}</span>
                                 {% if indent.purchase_status == 'Purchased' %}<span class="badge rounded-pill bg-info text-dark d-block shadow-sm"><i class="bi bi-cart-check-fill"></i> Purchased</span>{% endif %}
@@ -1153,7 +1154,7 @@ def delete_user(uid):
     else:
         target_user_ref.delete()
     return redirect(url_for('settings'))
-
+ 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
