@@ -17,23 +17,19 @@ app.secret_key = 'secure_key_v38_pending_filter_sort'
 app.permanent_session_lifetime = timedelta(minutes=15)
 
 # --- FIREBASE SETUP ---
-if os.path.exists("/etc/secrets/serviceAccountKey.json"):
-    CRED_PATH = "/etc/secrets/serviceAccountKey.json"
-elif os.path.exists("serviceAccountKey.json"):
-    CRED_PATH = "serviceAccountKey.json"
+if firebase_creds_json:
+    # 2. Parse the string into a dictionary
+    cred_dict = json.loads(firebase_creds_json)
+    cred = credentials.Certificate(cred_dict)
+    
+    # 3. Initialize the app
+    firebase_admin.initialize_app(cred)
+    print("Firebase initialized successfully!")
 else:
-    CRED_PATH = r"serviceAccountKey.json"
+    # This helps you debug if the variable is missing in Railway
+    print("Error: FIREBASE_CONFIG environment variable is missing!")
 
-try:
-    if os.path.exists(CRED_PATH):
-        cred = credentials.Certificate(CRED_PATH)
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred)
-    else:
-        print(f"❌ Error: Credential file not found at {CRED_PATH}")
-except ValueError:
-    pass 
-
+# Now you can safely call the client
 db = firestore.client()
 
 # ==========================================
