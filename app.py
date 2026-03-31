@@ -34,6 +34,7 @@ else:
 
 db = firestore.client()
 # --- FIREBASE SETUP END ---============
+
 # ==========================================
 # 2. LOGIC & HELPERS
 # ==========================================
@@ -44,13 +45,10 @@ def get_fy_string(dt):
     try:
         if isinstance(dt, str):
             dt = datetime.strptime(dt[:10], '%Y-%m-%d')
-        year = dt.year
-        month = dt.month
-        if month < 4:
-            return f"{year-1}-{str(year)[-2:]}"
-        else:
-            return f"{year}-{str(year+1)[-2:]}"
-    except: return ""
+        start_year = dt.year if dt.month >= 4 else dt.year - 1
+        return f"{start_year}-{str(start_year + 1)[-2:]}"
+    except: 
+        return ""
 
 def format_date_custom(value):
     if not value: return ""
@@ -355,7 +353,13 @@ HTML_DASHBOARD_INDENT = """
                                 {% else %}<span class="text-muted small">No Image</span>{% endif %}
                             </td>
                             <td><span class="d-block fw-500">{{ indent.department }}</span><span class="small text-muted">{{ indent.indent_person }}</span></td>
-                            <td><strong class="text-green">{{ indent.item }}</strong><div class="small text-muted fst-italic">{{ indent.reason }}</div></td>
+                            <td>
+                                <strong class="text-green">{{ indent.item }}</strong>
+                                <div class="small text-muted fst-italic">{{ indent.reason }}</div>
+                                {% if indent.remarks %}
+                                    <div class="small text-secondary mt-1"><span class="fw-bold text-dark">Remarks:</span> {{ indent.remarks }}</div>
+                                {% endif %}
+                            </td>
                             <td class="fw-bold">{{ indent.quantity }} <span class="text-muted fw-normal">{{ indent.unit }}</span></td>
                             <td class="text-primary small fw-bold">{{ indent.assigned_to }}</td>
                             <td class="text-success small fw-bold">{{ indent.approved_by_name if indent.approved_by_name else '-' }}</td>
@@ -371,9 +375,15 @@ HTML_DASHBOARD_INDENT = """
                                 <div class="btn-group">
                                     {% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}
                                         <a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary border-0" title="Edit"><i class="bi bi-pencil-square"></i></a>
-                                        {% if indent.purchase_status != 'Purchased' %}<a href="{{ url_for('mark_purchased', i_id=indent.id) }}" class="btn btn-sm btn-outline-success border-0" title="Mark Purchased" onclick="return confirm('Mark as Purchased?');"><i class="bi bi-cart-check"></i></a>{% endif %}
+                                        
+                                        {% if indent.purchase_status != 'Purchased' %}
+                                            <a href="{{ url_for('mark_purchased', i_id=indent.id) }}" class="btn btn-sm btn-outline-success border-0" title="Mark Purchased" onclick="return confirm('Mark as Purchased?');"><i class="bi bi-cart-check"></i></a>
+                                        {% elif session['role'] in ['Admin', 'SuperAdmin'] %}
+                                            <a href="{{ url_for('reset_purchase', i_id=indent.id) }}" class="btn btn-sm btn-outline-warning border-0" title="Reset Purchase" onclick="return confirm('Reset Purchase Status?');"><i class="bi bi-arrow-counterclockwise"></i></a>
+                                        {% endif %}
+                                        
+                                        <a href="{{ url_for('delete_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-danger border-0" title="Delete" onclick="return confirm('Delete?')"><i class="bi bi-trash"></i></a>
                                     {% endif %}
-                                    {% if session['role'] in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-danger border-0" title="Delete" onclick="return confirm('Delete?')"><i class="bi bi-trash"></i></a>{% endif %}
                                 </div>
                             </td>
                         </tr>
@@ -549,7 +559,7 @@ HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body
 
 HTML_CREATE_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 800px;"><div class="card-header d-flex justify-content-between"><h4>New Payment / Order</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body"><ul class="nav nav-tabs mb-4" id="paymentTabs"><li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#regularBill" onclick="setMode('Bill')">Regular Bill Entry</a></li><li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#advanceOrder" onclick="setMode('Advance')">Advance / PO Entry</a></li></ul>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><input type="hidden" name="entry_type" id="entryType" value="Bill"><div class="tab-content"><div class="tab-pane fade show active" id="regularBill"><div class="mb-3"><label class="fw-bold">Party Name</label><input type="text" name="party_name" class="form-control" placeholder="Vendor Name"></div><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Bill Number</label><input type="text" name="bill_number" class="form-control"></div><div class="col-md-6"><label class="fw-bold">Bill Date</label><input type="date" name="bill_date" class="form-control" value="{{ today }}"></div></div><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Amount</label><input type="number" step="0.01" name="amount" class="form-control"></div><div class="col-md-6"><label class="fw-bold">Due Date</label><input type="date" name="due_date" class="form-control"></div></div></div><div class="tab-pane fade" id="advanceOrder"><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Party Name</label><input type="text" name="adv_party_name" class="form-control"></div><div class="col-md-6"><label class="fw-bold">Quotation No.</label><input type="text" name="quotation_no" class="form-control"></div></div><div class="p-3 bg-light border rounded mb-3"><h6 class="text-primary">Product Details</h6><div class="mb-2"><label>Product Name / Detail</label><input type="text" name="item_detail" class="form-control"></div><div class="row"><div class="col-md-3"><label>Qty</label><input type="number" step="0.01" name="qty" id="qty" class="form-control" oninput="calcTotal()"></div><div class="col-md-3"><label>Price</label><input type="number" step="0.01" name="price" id="price" class="form-control" oninput="calcTotal()"></div><div class="col-md-3"><label>Tax</label><input type="number" step="0.01" name="tax" id="tax" class="form-control" oninput="calcTotal()" value="0"></div><div class="col-md-3"><label>Freight</label><input type="number" step="0.01" name="freight" id="freight" class="form-control" oninput="calcTotal()" value="0"></div></div><div class="mt-2 text-end"><h5>Total: <span id="totalDisplay">0.00</span></h5><input type="hidden" name="adv_amount" id="advAmount"></div></div><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Payment Type</label><select name="payment_type" class="form-select" onchange="toggleBank(this)"><option value="Credit">Credit</option><option value="Advance">Advance</option></select></div><div class="col-md-6"><label class="fw-bold">Delivery Time</label><input type="text" name="delivery_time" class="form-control" placeholder="e.g. 7 Days"></div></div><div id="bankDetails" class="d-none p-3 border border-warning rounded bg-warning bg-opacity-10 mb-3"><h6>Bank Details (Required for Advance)</h6><div class="row"><div class="col-md-3"><label class="small fw-bold">Bank Name</label><input type="text" name="bank_name" class="form-control" placeholder="Bank Name"></div><div class="col-md-3"><label class="small fw-bold">Branch Name</label><input type="text" name="branch_name" class="form-control" placeholder="Branch"></div><div class="col-md-3"><label class="small fw-bold">Account No</label><input type="text" name="account_no" class="form-control" placeholder="Account No"></div><div class="col-md-3"><label class="small fw-bold">IFSC Code</label><input type="text" name="ifsc" class="form-control" placeholder="IFSC Code"></div></div></div></div></div><div class="mb-3 mt-3"><label class="fw-bold">Approved By</label><input type="text" name="approved_by" class="form-control" required placeholder="Enter Name"></div><button type="submit" class="btn btn-success w-100">Save Entry</button><a href="{{ url_for('payment_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function setMode(mode){document.getElementById('entryType').value=mode;}function toggleBank(select){var bankDiv=document.getElementById('bankDetails');if(select.value==='Advance')bankDiv.classList.remove('d-none');else bankDiv.classList.add('d-none');}function calcTotal(){var qty=parseFloat(document.getElementById('qty').value)||0;var price=parseFloat(document.getElementById('price').value)||0;var tax=parseFloat(document.getElementById('tax').value)||0;var freight=parseFloat(document.getElementById('freight').value)||0;var total=(qty*price)+tax+freight;document.getElementById('totalDisplay').innerText=total.toFixed(2);document.getElementById('advAmount').value=total.toFixed(2);}</script></body></html>"""
 HTML_EDIT_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 700px;"><div class="card-header d-flex justify-content-between"><h4>Edit Payment</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><div class="mb-3"><label>Serial Number (FY)</label><input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled></div>{% if data.type == 'Advance' %}<div class="alert alert-info">Advance Order Entry</div><div class="row mb-2"><div class="col-md-6"><label>Party Name</label><input type="text" name="party_name" class="form-control" value="{{ data.party_name }}"></div><div class="col-md-6"><label>Quotation No</label><input type="text" name="quotation_no" class="form-control" value="{{ data.quotation_no }}"></div></div><div class="row mb-2"><div class="col-md-6"><label>Item</label><input type="text" name="item_detail" class="form-control" value="{{ data.item_detail }}"></div><div class="col-md-6"><label>Amount</label><input type="number" step="0.01" name="amount" class="form-control" value="{{ data.amount }}"></div></div><div class="row mb-2"><div class="col-md-4"><label>Qty</label><input type="text" name="qty" class="form-control" value="{{ data.qty }}"></div><div class="col-md-4"><label>Price</label><input type="text" name="price" class="form-control" value="{{ data.price }}"></div><div class="col-md-4"><label>Tax</label><input type="text" name="tax" class="form-control" value="{{ data.tax }}"></div></div><div class="row mb-2"><div class="col-md-6"><label>Payment Type</label><input type="text" name="payment_type" class="form-control" value="{{ data.payment_type }}"></div><div class="col-md-6"><label>Delivery Time</label><input type="text" name="delivery_time" class="form-control" value="{{ data.delivery_time }}"></div></div><div class="mb-2"><label>Bank Details</label><input type="text" name="bank_details" class="form-control" value="{{ data.bank_details }}"></div>{% else %}<div class="alert alert-secondary">Regular Bill Entry</div><div class="row mb-3"><div class="col-md-12 mb-2"><label class="fw-bold">Party Name</label><input type="text" name="party_name" class="form-control" value="{{ data.party_name }}" required></div><div class="col-md-6 mb-2"><label class="fw-bold">Bill Number</label><input type="text" name="bill_number" class="form-control" value="{{ data.bill_number }}" required></div><div class="col-md-6 mb-2"><label class="fw-bold">Bill Date</label><input type="date" name="bill_date" class="form-control" value="{{ data.bill_date }}" required></div><div class="col-md-6"><label class="fw-bold">Amount</label><input type="number" step="0.01" name="amount" class="form-control" value="{{ data.amount }}" required></div><div class="col-md-6"><label class="fw-bold">Due Date</label><input type="date" name="due_date" class="form-control" value="{{ data.due_date }}" required></div></div>{% endif %}<div class="col-md-12 mt-2"><label class="fw-bold">Approved By (Manual)</label><input type="text" name="approved_by" class="form-control" value="{{ data.approved_by }}" required></div><div class="mb-3 mt-3 p-3 border rounded border-warning bg-warning bg-opacity-10"><h5 class="text-dark">Status & Payment</h5><div class="mb-3"><label class="fw-bold">Status</label><select name="status" class="form-select" id="statusSelect" onchange="toggleDetails()"><option value="Pending" {% if data.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Done" {% if data.status == 'Done' %}selected{% endif %}>Done (Paid)</option></select></div><div id="paymentDetails" class="{% if data.status != 'Done' %}d-none{% endif %}"><div class="row"><div class="col-md-6 mb-2"><label class="fw-bold">Payment Date</label><input type="date" name="payment_date" class="form-control" value="{{ data.payment_date }}"></div><div class="col-md-6 mb-2"><label class="fw-bold">Mode</label><select name="payment_mode" class="form-select"><option value="" selected disabled>Select</option><option value="NEFT" {% if data.payment_mode == 'NEFT' %}selected{% endif %}>NEFT</option><option value="RTGS" {% if data.payment_mode == 'RTGS' %}selected{% endif %}>RTGS</option><option value="UPI" {% if data.payment_mode == 'UPI' %}selected{% endif %}>UPI</option><option value="CHEQUE" {% if data.payment_mode == 'CHEQUE' %}selected{% endif %}>CHEQUE</option><option value="CASH" {% if data.payment_mode == 'CASH' %}selected{% endif %}>CASH</option></select></div><div class="col-md-12"><label class="fw-bold">Ref No.</label><input type="text" name="transaction_ref" class="form-control" value="{{ data.transaction_ref }}"></div></div></div></div><button type="submit" class="btn btn-success w-100">Update</button><a href="{{ url_for('payment_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function toggleDetails(){var status=document.getElementById("statusSelect").value;var detailsDiv=document.getElementById("paymentDetails");if(status==="Done")detailsDiv.classList.remove("d-none");else detailsDiv.classList.add("d-none");}</script></body></html>"""
-HTML_DASHBOARD_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Payment System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3>{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('create_payment') }}" class="btn btn-success">+ New Payment Entry</a>{% endif %}</div><div class="card shadow"><div class="card-body"><table class="table table-hover table-bordered align-middle table-sm"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>PARTY NAME</th><th>DETAILS</th><th>AMOUNT</th><th>APPROVED BY</th><th>STATUS</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for p in payments %}<tr><td class="fw-bold">{{ p.fy }}/{{ p.serial_no }}</td><td>{% if p.type == 'Advance' %}<span class="badge bg-info text-dark">Advance/PO</span>{% else %}<span class="badge bg-secondary">Bill</span>{% endif %}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }} | {{ p.item_detail }}<br><span class="text-muted small">Delivery: {{ p.delivery_time }}</span>{% else %}Bill: {{ p.bill_number }}<br><span class="text-muted small">Due: {{ p.due_date | date_fmt }}</span>{% endif %}</td><td class="fw-bold text-end">{{ p.amount }}</td><td>{{ p.approved_by }}</td><td>{% if p.status == 'Done' %}<span class="badge bg-success">Done</span>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('edit_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session['role'] in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="text-center">No records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
+HTML_DASHBOARD_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Payment System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3>{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('create_payment') }}" class="btn btn-success">+ New Payment Entry</a>{% endif %}</div><div class="card shadow"><div class="card-body"><table class="table table-hover table-bordered align-middle table-sm"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>PARTY NAME</th><th>DETAILS</th><th>AMOUNT</th><th>APPROVED BY</th><th>STATUS</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for p in payments %}<tr><td class="fw-bold">{{ p.fy }}/{{ p.serial_no }}</td><td>{% if p.type == 'Advance' %}<span class="badge bg-info text-dark">Advance/PO</span>{% else %}<span class="badge bg-secondary">Bill</span>{% endif %}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }} | {{ p.item_detail }}<br><span class="text-muted small">Delivery: {{ p.delivery_time }}</span>{% else %}Bill: {{ p.bill_number }}<br><span class="text-muted small">Due: {{ p.due_date | date_fmt }}</span>{% endif %}</td><td class="fw-bold text-end">{{ p.amount }}</td><td>{{ p.approved_by }}</td><td>{% if p.status == 'Done' %}<span class="badge bg-success">Done</span>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('edit_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('delete_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="text-center">No records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 HTML_REPORTS_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Payment Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Party Name</label><input type="text" name="party_filter" class="form-control" value="{{ filters.party_filter }}"></div><div class="col-md-2"><label>Status</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Done" {% if filters.status == 'Done' %}selected{% endif %}>Done</option></select></div><div class="col-md-2 d-flex align-items-end gap-2"><button type="submit" name="action" value="filter" class="btn btn-primary w-50">Filter</button><button type="submit" name="action" value="export" class="btn btn-success w-50">Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Payment Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ payments|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm align-middle"><thead class="table-dark"><tr><th>SR</th><th>TYPE</th><th>PARTY</th><th>REF/BILL</th><th>ITEM/DETAILS</th><th>AMOUNT</th><th>STATUS</th></tr></thead><tbody>{% for p in payments %}<tr><td>{{ p.fy }}/{{ p.serial_no }}</td><td>{{ p.type }}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }}{% else %}Bill: {{ p.bill_number }}{% endif %}</td><td>{% if p.type == 'Advance' %}{{ p.item_detail }} (Qty: {{ p.qty }}){% else %}Bill Date: {{ p.bill_date | date_fmt }}{% endif %}</td><td>{{ p.amount }}</td><td>{{ p.status }}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 
 HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h2 class="mb-4 text-green">Admin Settings</h2><ul class="nav nav-tabs" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#fys">Financial Years</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#units">Manage Units</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#users">Manage Users</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs">Login Logs</button></li></ul><div class="tab-content pt-4">
@@ -821,12 +831,15 @@ def edit_indent(i_id):
 
 @app.route('/delete/<i_id>')
 def delete_indent(i_id):
-    if session['role'] not in ['Admin', 'SuperAdmin']: return redirect(url_for('dashboard'))
+    if session['role'] not in ['Admin', 'SuperAdmin', 'Editor']: return redirect(url_for('dashboard'))
     doc = db.collection('indents').document(i_id).get().to_dict()
     doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
     
-    if check_is_last_entry('indents', i_id, doc_fy): db.collection('indents').document(i_id).delete()
-    else: flash('Error: Only last entry of the Financial Year can be deleted.', 'danger')
+    if check_is_last_entry('indents', i_id, doc_fy): 
+        db.collection('indents').document(i_id).delete()
+        flash('Last entry deleted successfully.', 'success')
+    else: 
+        flash('Error: Only last entry of the Financial Year can be deleted.', 'danger')
     return redirect(url_for('dashboard'))
 
 @app.route('/purchase/<i_id>')
@@ -838,6 +851,20 @@ def mark_purchased(i_id):
         'purchased_at': datetime.now()
     })
     flash("Item marked as Purchased.", "success")
+    return redirect(url_for('dashboard'))
+
+@app.route('/reset_purchase/<i_id>')
+def reset_purchase(i_id):
+    if session.get('role') not in ['Admin', 'SuperAdmin']: 
+        flash("Unauthorized: Only Admins can reset purchase status.", "danger")
+        return redirect(url_for('dashboard'))
+        
+    db.collection('indents').document(i_id).update({
+        'purchase_status': '',
+        'purchased_by': firestore.DELETE_FIELD,
+        'purchased_at': firestore.DELETE_FIELD
+    })
+    flash("Purchase status has been reset.", "info")
     return redirect(url_for('dashboard'))
 
 @app.route('/bulk_update', methods=['POST'])
@@ -879,7 +906,8 @@ def reports():
     users = [d.to_dict() for d in db.collection('users').stream()]
     if request.method == 'POST':
         filters.update({k: request.form.get(k) for k in filters})
-        for doc in db.collection('indents').stream():
+        docs = db.collection('indents').stream()
+        for doc in docs:
             d = doc.to_dict()
             doc_fy = d.get('fy') or get_fy_string(d.get('created_at') or datetime.now())
             if doc_fy != active_fy: continue
@@ -918,7 +946,9 @@ def payment_dashboard():
     if 'user_id' not in session: return redirect(url_for('login'))
     active_fy = session.get('active_fy')
     payments = []
-    for doc in db.collection('payments').stream():
+    
+    docs = db.collection('payments').stream()
+    for doc in docs:
         p = doc.to_dict()
         doc_fy = p.get('fy') or get_fy_string(p.get('created_at') or datetime.now())
         if doc_fy != active_fy: continue
@@ -1025,12 +1055,15 @@ def edit_payment(p_id):
 
 @app.route('/payments/delete/<p_id>')
 def delete_payment(p_id):
-    if session['role'] not in ['Admin', 'SuperAdmin']: return redirect(url_for('payment_dashboard'))
+    if session['role'] not in ['Admin', 'SuperAdmin', 'Editor']: return redirect(url_for('payment_dashboard'))
     doc = db.collection('payments').document(p_id).get().to_dict()
     doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
     
-    if check_is_last_entry('payments', p_id, doc_fy): db.collection('payments').document(p_id).delete()
-    else: flash('Error: Only last payment entry of the Financial Year can be deleted.', 'danger')
+    if check_is_last_entry('payments', p_id, doc_fy): 
+        db.collection('payments').document(p_id).delete()
+        flash('Last payment entry deleted successfully.', 'success')
+    else: 
+        flash('Error: Only last payment entry of the Financial Year can be deleted.', 'danger')
     return redirect(url_for('payment_dashboard'))
 
 @app.route('/payment_reports', methods=['GET', 'POST'])
@@ -1041,7 +1074,8 @@ def payment_reports():
     results = []
     if request.method == 'POST':
         filters.update({k: request.form.get(k) for k in filters})
-        for doc in db.collection('payments').stream():
+        docs = db.collection('payments').stream()
+        for doc in docs:
             p = doc.to_dict()
             doc_fy = p.get('fy') or get_fy_string(p.get('created_at') or datetime.now())
             if doc_fy != active_fy: continue
@@ -1154,6 +1188,7 @@ def delete_user(uid):
     else:
         target_user_ref.delete()
     return redirect(url_for('settings'))
+
  
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
