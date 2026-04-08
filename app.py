@@ -76,7 +76,6 @@ def initialize_defaults():
     if not len(list(db.collection('departments').limit(1).stream())):
         for d in ['HR', 'IT', 'ELECTRICAL', 'CTP', 'STORE']: db.collection('departments').add({'name': d})
     
-    # Initialize current FY if missing
     current_fy = get_fy_string(datetime.now())
     if not list(db.collection('financial_years').where('name', '==', current_fy).limit(1).stream()):
         db.collection('financial_years').add({'name': current_fy})
@@ -90,29 +89,60 @@ def inject_global_vars():
         return dict(available_fys=fys)
     return dict(available_fys=[])
 
-def get_next_serial_number(collection_name, target_fy):
-    """Calculates serial number based ONLY on the selected Financial Year"""
-    docs = db.collection(collection_name).stream()
-    max_serial = 0
-    for doc in docs:
-        d = doc.to_dict()
-        doc_fy = d.get('fy')
-        if not doc_fy: # Fallback for old data
-            doc_fy = get_fy_string(d.get('created_at') or datetime.now())
-        
-        if doc_fy == target_fy:
+# 🔴 DEDICATED COUNTER ENGINE: NEVER GOES BACKWARDS
+def get_next_serial_number(collection_name, target_fy, count=1):
+    """
+    Uses a dedicated 'counters' collection. 
+    This prevents race conditions and ensures the counter NEVER goes backwards
+    unless explicitly deleted via the strict deletion rule.
+    """
+    counter_id = f"{collection_name}_{target_fy}"
+    counter_ref = db.collection('counters').document(counter_id)
+    
+    # 1. Initialize counter if it doesn't exist
+    doc = counter_ref.get()
+    if not doc.exists:
+        docs = db.collection(collection_name).where('fy', '==', target_fy).stream()
+        max_serial = 0
+        for d in docs:
             try:
-                val = int(d.get('serial_no', 0))
+                val = int(d.to_dict().get('serial_no', 0))
                 if val > max_serial: max_serial = val
-            except: continue
-    return max_serial + 1
+            except: pass
+        counter_ref.set({'last_value': max_serial})
 
-def check_is_last_entry(collection_name, doc_id, target_fy):
-    curr = get_next_serial_number(collection_name, target_fy) - 1
-    doc = db.collection(collection_name).document(doc_id).get()
+    # 2. Transactionally get next block of numbers
+    transaction = db.transaction()
+    @firestore.transactional
+    def update_in_transaction(transaction, ref):
+        snapshot = ref.get(transaction=transaction)
+        current_max = snapshot.get('last_value')
+        new_max = current_max + count
+        transaction.update(ref, {'last_value': new_max})
+        return current_max + 1
+
+    return update_in_transaction(transaction, counter_ref)
+
+def delete_last_entry_helper(collection_name, doc_id, target_fy):
+    """Safely deletes the absolute last entry and rolls back the counter by 1."""
+    counter_ref = db.collection('counters').document(f"{collection_name}_{target_fy}")
+    counter_snap = counter_ref.get()
+    
+    if not counter_snap.exists: return False
+    current_max = counter_snap.get('last_value')
+    
+    doc_ref = db.collection(collection_name).document(doc_id)
+    doc = doc_ref.get()
     if not doc.exists: return False
-    try: return int(doc.to_dict().get('serial_no', 0)) == curr
-    except: return False
+    
+    try:
+        doc_serial = int(doc.to_dict().get('serial_no', 0))
+        if doc_serial == current_max:
+            doc_ref.delete()
+            counter_ref.update({'last_value': current_max - 1})
+            return True
+    except: pass
+    return False
 
 def get_units_list():
     return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('units').stream()])))
@@ -433,6 +463,14 @@ HTML_CREATE_MULTI = """
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Department</label><select name="department_select" class="form-select" onchange="checkDept(this)" required><option value="" disabled selected>Select Dept</option>{% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}<option value="Other">Other (Add New)</option></select><input type="text" name="custom_department" class="form-control mt-2 d-none" placeholder="Enter New Dept Name" id="customDeptInput"></div>
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Indent Person</label><input type="text" name="indent_person" list="personList" class="form-control" placeholder="Type name..."><datalist id="personList">{% for p in persons %}<option value="{{ p }}">{% endfor %}</datalist></div>
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Assign To</label><select name="assigned_to" class="form-select">{% for user in users %}<option value="{{ user.name }}">{{ user.name }}</option>{% endfor %}</select></div>
+                    
+                    {% if session['role'] in ['Admin', 'SuperAdmin'] %}
+                    <div class="col-md-12 mt-3 pt-3 border-top">
+                        <label class="fw-bold small text-uppercase text-danger d-block">Admin Override: Starting Serial No (Optional)</label>
+                        <input type="number" name="manual_serial" class="form-control d-inline-block" style="width: 150px;" placeholder="e.g. 1">
+                        <small class="text-muted ms-2">Leave blank to auto-continue from the last number.</small>
+                    </div>
+                    {% endif %}
                 </div>
                 
                 <h5 class="mb-3 text-green border-bottom pb-2">Item Details</h5>
@@ -717,6 +755,15 @@ def create():
 
         existing_units = get_units_list()
         
+        manual_start = request.form.get('manual_serial')
+        if manual_start and str(manual_start).strip().isdigit() and session['role'] in ['Admin', 'SuperAdmin']:
+            next_sn = int(manual_start)
+            db.collection('counters').document(f"indents_{active_fy}").set({
+                'last_value': next_sn + len(items) - 1
+            }, merge=True)
+        else:
+            next_sn = get_next_serial_number('indents', active_fy, count=len(items))
+        
         for i in range(len(items)):
             final_unit = units[i]
             if final_unit == 'Other' and custom_units[i]:
@@ -741,7 +788,7 @@ def create():
             
             data = {
                 'fy': active_fy, 
-                'serial_no': get_next_serial_number('indents', active_fy), 
+                'serial_no': next_sn,
                 'indent_date': input_date_str, 
                 'department': final_dept,
                 'indent_person': indent_person, 
@@ -759,6 +806,7 @@ def create():
                 'created_at': datetime.now()
             }
             db.collection('indents').add(data)
+            next_sn += 1 
             
         flash(f"Entries Saved for FY {active_fy}!", "success")
         return redirect(url_for('dashboard'))
@@ -835,8 +883,7 @@ def delete_indent(i_id):
     doc = db.collection('indents').document(i_id).get().to_dict()
     doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
     
-    if check_is_last_entry('indents', i_id, doc_fy): 
-        db.collection('indents').document(i_id).delete()
+    if delete_last_entry_helper('indents', i_id, doc_fy): 
         flash('Last entry deleted successfully.', 'success')
     else: 
         flash('Error: Only last entry of the Financial Year can be deleted.', 'danger')
@@ -976,7 +1023,7 @@ def create_payment():
              flash(f"ERROR: The bill date does not belong to FY {active_fy}.", "danger")
              return redirect(request.referrer)
              
-        new_serial = get_next_serial_number('payments', active_fy)
+        new_serial = get_next_serial_number('payments', active_fy, count=1)
         data = {
             'fy': active_fy,
             'serial_no': new_serial,
@@ -1059,8 +1106,7 @@ def delete_payment(p_id):
     doc = db.collection('payments').document(p_id).get().to_dict()
     doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
     
-    if check_is_last_entry('payments', p_id, doc_fy): 
-        db.collection('payments').document(p_id).delete()
+    if delete_last_entry_helper('payments', p_id, doc_fy): 
         flash('Last payment entry deleted successfully.', 'success')
     else: 
         flash('Error: Only last payment entry of the Financial Year can be deleted.', 'danger')
@@ -1189,7 +1235,61 @@ def delete_user(uid):
         target_user_ref.delete()
     return redirect(url_for('settings'))
 
- 
+# --- FIX SERIAL SCRIPT (UPDATED) ---
+@app.route('/admin/fix_serial/<collection_name>/<fy_name>')
+def fix_serial_numbers(collection_name, fy_name):
+    """
+    This tool resets the serial numbers for a given collection and FY, 
+    starting from 1. It forces the database to perfectly align the counter logic.
+    """
+    if session.get('role') != 'SuperAdmin':
+        return "Unauthorized. Only SuperAdmins can run this tool.", 403
+
+    fy_name = urllib.parse.unquote(fy_name)
+    docs = db.collection(collection_name).stream()
+    
+    doc_list = []
+    for doc in docs:
+        d = doc.to_dict()
+        doc_fy = d.get('fy')
+        if not doc_fy: 
+            doc_fy = get_fy_string(d.get('created_at') or datetime.now())
+            
+        if doc_fy == fy_name:
+            d['id'] = doc.id
+            try: d['old_serial'] = int(d.get('serial_no', 0))
+            except: d['old_serial'] = 0
+            doc_list.append(d)
+
+    if not doc_list:
+        return f"No records found in '{collection_name}' for FY '{fy_name}'."
+
+    doc_list.sort(key=lambda x: x['old_serial'])
+    batch = db.batch()
+    new_serial = 1
+    updates_made = 0
+
+    for item in doc_list:
+        doc_ref = db.collection(collection_name).document(item['id'])
+        batch.update(doc_ref, {'serial_no': new_serial, 'fy': fy_name})
+        
+        new_serial += 1
+        updates_made += 1
+        
+        if updates_made % 400 == 0:
+            batch.commit()
+            batch = db.batch()
+
+    if updates_made % 400 != 0:
+        batch.commit()
+
+    # 🔴 RESET THE COUNTER SO THE NEXT ENTRY IS 100% CORRECT
+    db.collection('counters').document(f"{collection_name}_{fy_name}").set({
+        'last_value': updates_made
+    })
+
+    return f"<h3>✅ Success!</h3><p>Updated <b>{updates_made}</b> records in <b>{collection_name}</b> for FY <b>{fy_name}</b>.</p><p>Serial numbers now run sequentially from <b>1 to {updates_made}</b>.</p><br><a href='/'>Return to Dashboard</a>"
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
