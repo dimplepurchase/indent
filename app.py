@@ -34,13 +34,23 @@ else:
 
 db = firestore.client()
 # --- FIREBASE SETUP END ---============
-
 # ==========================================
 # 2. LOGIC & HELPERS
 # ==========================================
 
+# --- JSON ENCODER FOR FIREBASE DATETIMES ---
+class FirestoreEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return {'__type__': 'datetime', 'value': obj.isoformat()}
+        return super(FirestoreEncoder, self).default(obj)
+
+def firestore_decoder(dct):
+    if '__type__' in dct and dct['__type__'] == 'datetime':
+        return datetime.fromisoformat(dct['value'])
+    return dct
+
 def get_fy_string(dt):
-    """Generates the Financial Year string (e.g. 2025-26) based on April 1st cycle"""
     if not dt: return ""
     try:
         if isinstance(dt, str):
@@ -90,11 +100,6 @@ def inject_global_vars():
     return dict(available_fys=[])
 
 def get_next_serial_number(collection_name, target_fy, count=1):
-    """
-    Uses a dedicated 'counters' collection. 
-    This prevents race conditions and ensures the counter NEVER goes backwards
-    unless explicitly deleted via the strict deletion rule.
-    """
     counter_id = f"{collection_name}_{target_fy}"
     counter_ref = db.collection('counters').document(counter_id)
     
@@ -121,7 +126,6 @@ def get_next_serial_number(collection_name, target_fy, count=1):
     return update_in_transaction(transaction, counter_ref)
 
 def delete_last_entry_helper(collection_name, doc_id, target_fy):
-    """Safely deletes the absolute last entry and rolls back the counter by 1."""
     counter_ref = db.collection('counters').document(f"{collection_name}_{target_fy}")
     counter_snap = counter_ref.get()
     
@@ -614,9 +618,54 @@ HTML_EDIT_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """
 HTML_DASHBOARD_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Payment System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3>{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('create_payment') }}" class="btn btn-success">+ New Payment Entry</a>{% endif %}</div><div class="card shadow"><div class="card-body"><table class="table table-hover table-bordered align-middle table-sm"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>PARTY NAME</th><th>DETAILS</th><th>AMOUNT</th><th>APPROVED BY</th><th>STATUS</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for p in payments %}<tr><td class="fw-bold">{{ p.fy }}/{{ p.serial_no }}</td><td>{% if p.type == 'Advance' %}<span class="badge bg-info text-dark">Advance/PO</span>{% else %}<span class="badge bg-secondary">Bill</span>{% endif %}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }} | {{ p.item_detail }}<br><span class="text-muted small">Delivery: {{ p.delivery_time }}</span>{% else %}Bill: {{ p.bill_number }}<br><span class="text-muted small">Due: {{ p.due_date | date_fmt }}</span>{% endif %}</td><td class="fw-bold text-end">{{ p.amount }}</td><td>{{ p.approved_by }}</td><td>{% if p.status == 'Done' %}<span class="badge bg-success">Done</span>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('edit_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('delete_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="text-center">No records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 HTML_REPORTS_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Payment Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Party Name</label><input type="text" name="party_filter" class="form-control" value="{{ filters.party_filter }}"></div><div class="col-md-2"><label>Status</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Done" {% if filters.status == 'Done' %}selected{% endif %}>Done</option></select></div><div class="col-md-2 d-flex align-items-end gap-2"><button type="submit" name="action" value="filter" class="btn btn-primary w-50">Filter</button><button type="submit" name="action" value="export" class="btn btn-success w-50">Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Payment Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ payments|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm align-middle"><thead class="table-dark"><tr><th>SR</th><th>TYPE</th><th>PARTY</th><th>REF/BILL</th><th>ITEM/DETAILS</th><th>AMOUNT</th><th>STATUS</th></tr></thead><tbody>{% for p in payments %}<tr><td>{{ p.fy }}/{{ p.serial_no }}</td><td>{{ p.type }}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }}{% else %}Bill: {{ p.bill_number }}{% endif %}</td><td>{% if p.type == 'Advance' %}{{ p.item_detail }} (Qty: {{ p.qty }}){% else %}Bill Date: {{ p.bill_date | date_fmt }}{% endif %}</td><td>{{ p.amount }}</td><td>{{ p.status }}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 
-HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h2 class="mb-4 text-green">Admin Settings</h2><ul class="nav nav-tabs" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#fys">Financial Years</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#units">Manage Units</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#users">Manage Users</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs">Login Logs</button></li></ul><div class="tab-content pt-4">
+HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h2 class="mb-4 text-green">Admin Settings</h2><ul class="nav nav-tabs" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#fys">Financial Years</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#units">Manage Units</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#users">Manage Users</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs">Login Logs</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#maintenance">Maintenance <i class="bi bi-tools text-danger"></i></button></li></ul><div class="tab-content pt-4">
 <div class="tab-pane fade show active" id="fys"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-warning text-dark fw-bold">Create New Financial Year</div><div class="card-body"><form method="POST" action="{{ url_for('add_fy') }}"><div class="mb-2"><label>Format: YYYY-YY (e.g. 2026-27)</label><input type="text" name="fy_name" class="form-control" placeholder="2026-27" required></div><button class="btn btn-warning w-100" type="submit">Create FY</button></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Available Financial Years</div><div class="card-body"><table class="table table-sm"><thead><tr><th>FY Name</th><th>Action</th></tr></thead><tbody>{% for fy in available_fys %}<tr><td class="fw-bold">{{ fy }}</td><td><a href="{{ url_for('delete_fy', fy_name=fy) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Caution: Deleting this removes it from the dropdown. Records will not be deleted, but they may become inaccessible from the UI. Continue?')">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
-<div class="tab-pane fade" id="units"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-secondary text-white">Add New Unit</div><div class="card-body"><form method="POST" action="{{ url_for('add_unit') }}"><div class="input-group"><input type="text" name="unit_name" class="form-control" placeholder="e.g. PACKET" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Units</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Unit Name</th><th>Action</th></tr></thead><tbody>{% for u in units %}<tr><td>{{ u.name }}</td><td><a href="{{ url_for('delete_unit', uid=u.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div><div class="tab-pane fade" id="users"><div class="d-flex justify-content-end mb-2"><a href="{{ url_for('edit_user', uid='new') }}" class="btn btn-success">+ Create User</a></div><div class="card shadow"><div class="card-body"><table class="table"><thead class="table-dark"><tr><th>Name</th><th>Username</th><th>Role</th><th>Password</th><th>Actions</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user.name }}</td><td>{{ user.username }}</td><td>{{ user.role }}</td><td class="font-monospace">{% if session['role'] == 'SuperAdmin' %}<span class="text-danger">{{ user.password }}</span>{% else %}******{% endif %}</td><td><a href="{{ url_for('edit_user', uid=user.id) }}" class="btn btn-sm btn-primary">Edit</a>{% if session['role'] == 'SuperAdmin' %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% elif session['role'] == 'Admin' and user.role not in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div><div class="tab-pane fade" id="logs"><div class="card shadow"><div class="card-header bg-info text-white">Recent Logins (Last 50)</div><div class="card-body">{% if session['role'] == 'SuperAdmin' %}<table class="table table-striped table-sm"><thead><tr><th>Time</th><th>Name</th><th>Username</th><th>Role</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.timestamp | datetime_fmt }}</td><td>{{ log.name }}</td><td>{{ log.username }}</td><td>{{ log.role }}</td></tr>{% else %}<tr><td colspan="4" class="text-center">No logs found</td></tr>{% endfor %}</tbody></table>{% else %}<div class="alert alert-warning text-center">Only SuperAdmin can view logs.</div>{% endif %}</div></div></div></div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script></body></html>"""
+<div class="tab-pane fade" id="units"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-secondary text-white">Add New Unit</div><div class="card-body"><form method="POST" action="{{ url_for('add_unit') }}"><div class="input-group"><input type="text" name="unit_name" class="form-control" placeholder="e.g. PACKET" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Units</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Unit Name</th><th>Action</th></tr></thead><tbody>{% for u in units %}<tr><td>{{ u.name }}</td><td><a href="{{ url_for('delete_unit', uid=u.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div><div class="tab-pane fade" id="users"><div class="d-flex justify-content-end mb-2"><a href="{{ url_for('edit_user', uid='new') }}" class="btn btn-success">+ Create User</a></div><div class="card shadow"><div class="card-body"><table class="table"><thead class="table-dark"><tr><th>Name</th><th>Username</th><th>Role</th><th>Password</th><th>Actions</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user.name }}</td><td>{{ user.username }}</td><td>{{ user.role }}</td><td class="font-monospace">{% if session['role'] == 'SuperAdmin' %}<span class="text-danger">{{ user.password }}</span>{% else %}******{% endif %}</td><td><a href="{{ url_for('edit_user', uid=user.id) }}" class="btn btn-sm btn-primary">Edit</a>{% if session['role'] == 'SuperAdmin' %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% elif session['role'] == 'Admin' and user.role not in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div><div class="tab-pane fade" id="logs"><div class="card shadow"><div class="card-header bg-info text-white">Recent Logins (Last 50)</div><div class="card-body">{% if session['role'] == 'SuperAdmin' %}<table class="table table-striped table-sm"><thead><tr><th>Time</th><th>Name</th><th>Username</th><th>Role</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.timestamp | datetime_fmt }}</td><td>{{ log.name }}</td><td>{{ log.username }}</td><td>{{ log.role }}</td></tr>{% else %}<tr><td colspan="4" class="text-center">No logs found</td></tr>{% endfor %}</tbody></table>{% else %}<div class="alert alert-warning text-center">Only SuperAdmin can view logs.</div>{% endif %}</div></div></div>
+<div class="tab-pane fade" id="maintenance">
+    <div class="card shadow border-danger mb-4">
+        <div class="card-header bg-danger text-white fw-bold"><i class="bi bi-exclamation-triangle-fill me-2"></i>Database Maintenance & Serial Fix</div>
+        <div class="card-body">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}{% for category, message in messages %}{% if category in ['success', 'warning', 'danger'] %}
+                    <div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>
+                {% endif %}{% endfor %}{% endif %}
+            {% endwith %}
+            <div class="alert alert-warning"><strong>Notice:</strong> Use this tool if you have duplicate serial numbers or if numbers are out of order. This will <strong>sort all entries chronologically by Date</strong> and permanently re-assign serial numbers sequentially starting from 1.</div>
+            <form method="POST" action="{{ url_for('fix_serials') }}" onsubmit="return confirm('Are you sure you want to completely re-sequence the serial numbers for this Financial Year? This action cannot be undone.');">
+                <div class="row align-items-end">
+                    <div class="col-md-4"><label class="fw-bold">Select Collection</label><select name="collection_name" class="form-select" required><option value="indents">Indents System</option><option value="payments">Payments System</option></select></div>
+                    <div class="col-md-4"><label class="fw-bold">Financial Year</label><select name="fy_name" class="form-select" required>{% for fy in available_fys %}<option value="{{ fy }}">{{ fy }}</option>{% endfor %}</select></div>
+                    <div class="col-md-4"><button type="submit" class="btn btn-danger w-100 fw-bold"><i class="bi bi-tools"></i> Re-Sort & Fix Serials by Date</button></div>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <hr class="my-4">
+    <h5 class="text-danger fw-bold"><i class="bi bi-cloud-arrow-down-fill"></i> Database Backup & Restore (SuperAdmin Only)</h5>
+    <div class="row mt-3">
+        <div class="col-md-6">
+            <div class="p-3 border rounded bg-light h-100">
+                <h6 class="text-primary"><i class="bi bi-download"></i> Download Full Backup</h6>
+                <p class="small text-muted">Export a complete JSON backup of all system data. Keep this file safe before making major changes or moving servers.</p>
+                <a href="{{ url_for('backup_database') }}" class="btn btn-outline-primary w-100 mt-2">Download Database.json</a>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="p-3 border rounded border-danger bg-danger bg-opacity-10 h-100">
+                <h6 class="text-danger"><i class="bi bi-upload"></i> Restore from Backup</h6>
+                <p class="small text-muted">Upload a previous JSON backup to restore data. <strong>Warning:</strong> This will overwrite existing records with the exact same ID.</p>
+                <form method="POST" action="{{ url_for('restore_database') }}" enctype="multipart/form-data" onsubmit="return confirm('Are you absolutely sure? This will forcefully write backup data into the live database.');">
+                    <div class="input-group mt-2">
+                        <input type="file" name="backup_file" class="form-control form-control-sm" accept=".json" required>
+                        <button class="btn btn-danger btn-sm px-3" type="submit">Restore Data</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+</div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script></body></html>"""
 HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 500px;"><div class="card-header bg-success text-white"><h4>{{ 'Create' if uid == 'new' else 'Modify' }} User</h4></div><div class="card-body"><form method="POST"><div class="mb-3"><label>Name</label><input type="text" name="name" class="form-control" value="{{ user.name if user else '' }}" required></div><div class="mb-3"><label>Username</label><input type="text" name="username" class="form-control" value="{{ user.username if user else '' }}" required></div><div class="mb-3"><label>Password</label>{% if uid == 'new' %}<input type="text" name="password" class="form-control" required placeholder="Set initial password">{% elif session['role'] == 'SuperAdmin' %}<input type="text" name="password" class="form-control" placeholder="Enter new to change" value="{{ user.password }}">{% else %}<input type="text" class="form-control" value="******" disabled><small class="text-muted d-block mt-1"><i class="bi bi-lock-fill"></i> Only SuperAdmin can change other users' passwords.<br>Users can change their own password from the login screen.</small>{% endif %}</div><div class="mb-3"><label>Role</label><select name="role" class="form-select"><option value="Viewer" {% if user and user.role == 'Viewer' %}selected{% endif %}>Viewer (View Assigned & Receive)</option><option value="Editor" {% if user and user.role == 'Editor' %}selected{% endif %}>Editor (Data Entry)</option><option value="Admin" {% if user and user.role == 'Admin' %}selected{% endif %}>Admin (Standard)</option>{% if session['role'] == 'SuperAdmin' %}<option value="SuperAdmin" {% if user and user.role == 'SuperAdmin' %}selected{% endif %}>SuperAdmin (Full Access)</option>{% endif %}</select></div><button type="submit" class="btn btn-success w-100">Save</button></form></div></div></div></body></html>"""
 
 
@@ -873,13 +922,11 @@ def edit_indent(i_id):
                  new_status = request.form['approval_status']
                  update_data['approval_status'] = new_status
                  
-                 # Record the person doing the action (Approve/Hold/Reject)
                  if new_status in ['Approved', 'Hold', 'Rejected']:
                      update_data['approved_by_name'] = session['user_name']
                  else:
                      update_data['approved_by_name'] = ""
                  
-                 # Force Received Status if Rejected
                  if new_status == 'Rejected':
                      update_data['received_status'] = 'Rejected'
                      update_data['received_date'] = ""
@@ -953,13 +1000,11 @@ def bulk_update():
         else:
             update_dict = {'approval_status': action}
             
-            # Record the person's name for Approved, Hold, AND Rejected
             if action in ['Approved', 'Hold', 'Rejected']:
                 update_dict['approved_by_name'] = request.form.get('approver_name')
             else: 
                 update_dict['approved_by_name'] = ""
             
-            # Force Received Status if Rejected
             if action == 'Rejected':
                 update_dict['received_status'] = 'Rejected'
                 update_dict['received_date'] = ""
@@ -1007,6 +1052,7 @@ def reports():
             if filters['assigned_filter'] != 'All' and d.get('assigned_to') != filters['assigned_filter']: continue
             if filters['received_status'] == 'Received' and d.get('received_status') != 'Received': continue
             if filters['received_status'] == 'Pending' and d.get('received_status') == 'Received': continue
+            if filters['received_status'] == 'Rejected' and d.get('received_status') != 'Rejected': continue
             results.append(d)
         if filters['sort_by'] == 'Department': results.sort(key=lambda x: x['department'])
         elif filters['sort_by'] == 'Assigned': results.sort(key=lambda x: x['assigned_to'])
@@ -1199,7 +1245,7 @@ def payment_reports():
                 
     return render_template_string(HTML_REPORTS_PAYMENT, session=session, payments=results, filters=filters, current_time=datetime.now().strftime("%Y-%m-%d"), system='payment')
 
-# --- SETTINGS & USERS ---
+# --- SETTINGS, USERS & MAINTENANCE ---
 @app.route('/settings')
 def settings():
     if session.get('role') not in ['Admin', 'SuperAdmin']: return redirect(url_for('dashboard'))
@@ -1269,36 +1315,52 @@ def delete_user(uid):
         target_user_ref.delete()
     return redirect(url_for('settings'))
 
-# --- FIX SERIAL SCRIPT (UPDATED) ---
-@app.route('/admin/fix_serial/<collection_name>/<fy_name>')
-def fix_serial_numbers(collection_name, fy_name):
-    """
-    This tool resets the serial numbers for a given collection and FY, 
-    starting from 1. It forces the database to perfectly align the counter logic.
-    """
-    if session.get('role') != 'SuperAdmin':
-        return "Unauthorized. Only SuperAdmins can run this tool.", 403
+@app.route('/settings/fix_serials', methods=['POST'])
+def fix_serials():
+    if session.get('role') not in ['Admin', 'SuperAdmin']:
+        flash("Unauthorized", "danger")
+        return redirect(url_for('settings'))
 
-    fy_name = urllib.parse.unquote(fy_name)
+    collection_name = request.form.get('collection_name')
+    fy_name = request.form.get('fy_name')
+
     docs = db.collection(collection_name).stream()
-    
     doc_list = []
+    
     for doc in docs:
         d = doc.to_dict()
-        doc_fy = d.get('fy')
-        if not doc_fy: 
-            doc_fy = get_fy_string(d.get('created_at') or datetime.now())
-            
+        doc_fy = d.get('fy') or get_fy_string(d.get('created_at') or datetime.now())
+        
         if doc_fy == fy_name:
             d['id'] = doc.id
-            try: d['old_serial'] = int(d.get('serial_no', 0))
-            except: d['old_serial'] = 0
+            if collection_name == 'indents':
+                sort_date_str = str(d.get('indent_date', ''))
+            else:
+                sort_date_str = str(d.get('bill_date', d.get('payment_date', '')))
+            
+            if not sort_date_str or sort_date_str == 'None':
+                c_at = d.get('created_at')
+                if isinstance(c_at, datetime):
+                    sort_date_str = c_at.strftime('%Y-%m-%d')
+                else:
+                    sort_date_str = '1970-01-01'
+                    
+            c_at = d.get('created_at')
+            if not isinstance(c_at, datetime):
+                c_at = datetime.min
+            c_at = c_at.replace(tzinfo=None) 
+
+            d['sort_date'] = sort_date_str
+            d['sort_time'] = c_at
+            
             doc_list.append(d)
 
     if not doc_list:
-        return f"No records found in '{collection_name}' for FY '{fy_name}'."
+        flash(f"No records found in '{collection_name}' for FY '{fy_name}'.", "warning")
+        return redirect(url_for('settings'))
 
-    doc_list.sort(key=lambda x: x['old_serial'])
+    doc_list.sort(key=lambda x: (x['sort_date'], x['sort_time']))
+
     batch = db.batch()
     new_serial = 1
     updates_made = 0
@@ -1321,7 +1383,57 @@ def fix_serial_numbers(collection_name, fy_name):
         'last_value': updates_made
     })
 
-    return f"<h3>✅ Success!</h3><p>Updated <b>{updates_made}</b> records in <b>{collection_name}</b> for FY <b>{fy_name}</b>.</p><p>Serial numbers now run sequentially from <b>1 to {updates_made}</b>.</p><br><a href='/'>Return to Dashboard</a>"
+    flash(f"Successfully sorted by Date and fixed {updates_made} serial numbers for {collection_name} ({fy_name}).", "success")
+    return redirect(url_for('settings'))
+
+@app.route('/settings/backup')
+def backup_database():
+    if session.get('role') != 'SuperAdmin': return "Unauthorized", 403
+    collections = ['users', 'units', 'departments', 'financial_years', 'indent_persons', 'indents', 'payments', 'counters', 'login_logs']
+    backup_data = {}
+    
+    for coll in collections:
+        backup_data[coll] = {}
+        for doc in db.collection(coll).stream():
+            backup_data[coll][doc.id] = doc.to_dict()
+            
+    output = io.BytesIO()
+    output.write(json.dumps(backup_data, cls=FirestoreEncoder).encode('utf-8'))
+    output.seek(0)
+    
+    filename = f"DPPL_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return send_file(output, download_name=filename, as_attachment=True, mimetype='application/json')
+
+@app.route('/settings/restore', methods=['POST'])
+def restore_database():
+    if session.get('role') != 'SuperAdmin': return "Unauthorized", 403
+    
+    file = request.files.get('backup_file')
+    if not file or not file.filename.endswith('.json'):
+        flash("Invalid file format. Please upload a JSON backup.", "danger")
+        return redirect(url_for('settings'))
+    
+    try:
+        data = json.loads(file.read().decode('utf-8'), object_hook=firestore_decoder)
+        batch = db.batch()
+        count = 0
+        
+        for coll_name, docs in data.items():
+            for doc_id, doc_data in docs.items():
+                doc_ref = db.collection(coll_name).document(doc_id)
+                batch.set(doc_ref, doc_data)
+                count += 1
+                
+                if count % 400 == 0:
+                    batch.commit()
+                    batch = db.batch()
+                    
+        batch.commit()
+        flash(f"Database restored successfully! Processed {count} records across all collections.", "success")
+    except Exception as e:
+        flash(f"Restore failed: {str(e)}", "danger")
+        
+    return redirect(url_for('settings'))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
