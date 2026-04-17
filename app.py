@@ -307,8 +307,8 @@ HTML_DASHBOARD_INDENT = """
             
             <form method="GET" class="d-flex me-2">
                 <input type="hidden" name="status" value="{{ current_status }}">
-                <div class="input-group">
-                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item..." value="{{ request.args.get('search', '') }}">
+                <div class="input-group" style="width: 250px;">
+                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item, Created By, Dept..." value="{{ request.args.get('search', '') }}">
                     <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>
                     {% if request.args.get('search') or current_status == 'Pending' %}
                     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
@@ -750,7 +750,6 @@ def dashboard():
         i['fy'] = doc_fy
         
         if session['role'] == 'Viewer' and i.get('assigned_to') != session['user_name']: continue
-        if search_query and search_query not in str(i.get('item', '')).lower(): continue
         if status_filter == 'Pending' and i.get('received_status') == 'Received': continue
         
         try: i['serial_no'] = int(i.get('serial_no', 0))
@@ -763,6 +762,13 @@ def dashboard():
         i.setdefault('remarks', '')
         i.setdefault('image_url', '')
         i.setdefault('purchase_status', '')
+        i.setdefault('assigned_to', '')
+        i.setdefault('department', '')
+        
+        if search_query:
+            combined_text = f"{i.get('item', '')} {i.get('created_by', '')} cr:{i.get('created_by', '')} {i.get('assigned_to', '')} {i.get('indent_person', '')} {i.get('department', '')}".lower()
+            if search_query not in combined_text:
+                continue
         
         indents.append(i)
         
