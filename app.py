@@ -33,12 +33,10 @@ else:
     print("CRITICAL ERROR: FIREBASE_CONFIG environment variable not found!")
 
 db = firestore.client()
-# --- FIREBASE SETUP END ---============
 # ==========================================
 # 2. LOGIC & HELPERS
 # ==========================================
 
-# --- JSON ENCODER FOR FIREBASE DATETIMES ---
 class FirestoreEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, datetime):
@@ -77,6 +75,27 @@ def format_datetime_custom(value):
 app.jinja_env.filters['date_fmt'] = format_date_custom
 app.jinja_env.filters['datetime_fmt'] = format_datetime_custom
 app.jinja_env.filters['fy_fmt'] = get_fy_string
+
+# --- PERMISSIONS ENGINE (BACKWARD COMPATIBLE) ---
+def get_default_permissions(role):
+    """Generates default permissions if a user does not have a custom matrix set yet."""
+    p = {
+        'indent': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
+        'payment': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
+        'gatepass': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
+        'settings': {'view': False}
+    }
+    if role in ['SuperAdmin', 'Admin']:
+        for m in ['indent', 'payment', 'gatepass']:
+            p[m] = {'view': True, 'create': True, 'edit': True, 'delete': True, 'approve': True}
+        p['settings']['view'] = True
+    elif role == 'Editor':
+        for m in ['indent', 'payment', 'gatepass']:
+            p[m] = {'view': True, 'create': True, 'edit': True, 'delete': False, 'approve': False}
+    elif role == 'Viewer':
+        for m in ['indent', 'payment', 'gatepass']:
+            p[m] = {'view': True, 'create': False, 'edit': False, 'delete': False, 'approve': False}
+    return p
 
 def initialize_defaults():
     if not list(db.collection('users').where('username', '==', 'admin1').stream()):
@@ -154,6 +173,9 @@ def get_departments_list():
 def get_people_list():
     return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('indent_persons').stream()])))
 
+def get_companies_list():
+    return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('companies').stream()])))
+
 def add_if_new(collection, name):
     if not name or name.lower() == 'other': return
     name = name.strip().upper()
@@ -184,6 +206,7 @@ HTML_BASE_HEAD = """
         .card { border: none; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.05); overflow: hidden; }
         .card-header { background-color: var(--primary-green); color: white; font-weight: 500; }
         .status-received { background-color: #d1e7dd !important; color: #0f5132; }
+        .status-cleared { background-color: #e2e3e5 !important; color: #41464b; }
         .text-green { color: var(--primary-green); }
         .small-meta { font-size: 0.75rem; color: #6c757d; line-height: 1.2; display: block; margin-top: 4px; }
         @media print { .no-print { display: none !important; } .card { box-shadow: none !important; border: 1px solid #ddd; } body { background-color: white !important; } }
@@ -212,8 +235,17 @@ HTML_NAV = """
     <span class="navbar-brand me-5"><i class="bi bi-tree-fill me-2"></i>DPPL System</span>
     <div class="collapse navbar-collapse">
         <div class="nav nav-pills me-auto">
+            {% if session.get('permissions', {}).get('indent', {}).get('view', True) %}
             <a href="{{ url_for('dashboard') }}" class="nav-link {% if system == 'indent' %}active{% endif %}">📦 Indent</a>
+            {% endif %}
+            
+            {% if session.get('permissions', {}).get('payment', {}).get('view', True) %}
             <a href="{{ url_for('payment_dashboard') }}" class="nav-link {% if system == 'payment' %}active{% endif %}">💰 Payment</a>
+            {% endif %}
+            
+            {% if session.get('permissions', {}).get('gatepass', {}).get('view', True) %}
+            <a href="{{ url_for('gatepass_dashboard') }}" class="nav-link {% if system == 'gatepass' %}active{% endif %}">🎫 Gate Pass</a>
+            {% endif %}
         </div>
         
         <div class="d-flex align-items-center">
@@ -232,8 +264,13 @@ HTML_NAV = """
             <div class="text-light d-flex align-items-center">
                 <span class="me-3"><small>User:</small> <strong>{{ session['user_name'] }}</strong> <span class="badge bg-light text-success rounded-pill ms-1">{{ session['role'] }}</span></span>
                 {% if system == 'indent' %}<a href="{{ url_for('reports') }}" class="btn btn-sm btn-light text-success fw-bold me-2">Reports</a>
-                {% elif system == 'payment' %}<a href="{{ url_for('payment_reports') }}" class="btn btn-sm btn-light text-success fw-bold me-2">Reports</a>{% endif %}
-                {% if session['role'] in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('settings') }}" class="btn btn-sm btn-outline-light me-2"><i class="bi bi-gear-fill"></i></a>{% endif %}
+                {% elif system == 'payment' %}<a href="{{ url_for('payment_reports') }}" class="btn btn-sm btn-light text-success fw-bold me-2">Reports</a>
+                {% elif system == 'gatepass' %}<a href="{{ url_for('gatepass_reports') }}" class="btn btn-sm btn-light text-success fw-bold me-2">Reports</a>{% endif %}
+                
+                {% if session.get('role') in ['Admin', 'SuperAdmin'] or session.get('permissions', {}).get('settings', {}).get('view') %}
+                <a href="{{ url_for('settings') }}" class="btn btn-sm btn-outline-light me-2"><i class="bi bi-gear-fill"></i> Settings</a>
+                {% endif %}
+                
                 <a href="{{ url_for('logout') }}" class="btn btn-sm btn-danger rounded-pill px-3">Logout</a>
             </div>
         </div>
@@ -247,7 +284,7 @@ HTML_LOGIN = """
     <div class="card shadow-lg p-4" style="width: 380px; border-radius: 15px;">
         <div class="text-center mb-4">
             <h2 class="text-green fw-bold"><i class="bi bi-tree-fill"></i> DPPL</h2>
-            <h5 class="text-muted">Indent System</h5>
+            <h5 class="text-muted">Internal System</h5>
         </div>
         {% with messages = get_flashed_messages() %}
             {% if messages %}<div class="alert alert-danger rounded-3">{{ messages[0] }}</div>{% endif %}
@@ -291,6 +328,9 @@ HTML_CHANGE_PASS = """
 </body></html>
 """
 
+# ==========================================
+# INDENT TEMPLATES
+# ==========================================
 HTML_DASHBOARD_INDENT = """
 <!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """
 <body>""" + HTML_NAV + """
@@ -308,7 +348,7 @@ HTML_DASHBOARD_INDENT = """
             <form method="GET" class="d-flex me-2">
                 <input type="hidden" name="status" value="{{ current_status }}">
                 <div class="input-group" style="width: 250px;">
-                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item, Created By, Dept..." value="{{ request.args.get('search', '') }}">
+                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item, User, Dept..." value="{{ request.args.get('search', '') }}">
                     <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>
                     {% if request.args.get('search') or current_status == 'Pending' %}
                     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
@@ -316,7 +356,7 @@ HTML_DASHBOARD_INDENT = """
                 </div>
             </form>
 
-            {% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}
+            {% if session.get('permissions', {}).get('indent', {}).get('create') %}
                 <a href="{{ url_for('create') }}" class="btn btn-success shadow-sm px-4"><i class="bi bi-plus-lg"></i> New Indent</a>
             {% endif %}
         </div>
@@ -326,7 +366,7 @@ HTML_DASHBOARD_INDENT = """
     {% endwith %}
     <div class="card shadow">
         <div class="card-body p-0">
-            {% if session['role'] in ['Admin', 'SuperAdmin'] %}
+            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
             <form id="bulkForm" method="POST" action="{{ url_for('bulk_update') }}">
                 <div class="p-3 bg-light border-bottom no-print">
                     <div class="row g-2 align-items-end">
@@ -357,7 +397,7 @@ HTML_DASHBOARD_INDENT = """
                 <table class="table table-hover align-middle mb-0">
                     <thead>
                         <tr>
-                            {% if session['role'] in ['Admin', 'SuperAdmin'] %}<th class="no-print text-center" style="width: 40px;"><input type="checkbox" onclick="toggleAll(this)"></th>{% endif %}
+                            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}<th class="no-print text-center" style="width: 40px;"><input type="checkbox" onclick="toggleAll(this)"></th>{% endif %}
                             <th>S.No</th>
                             <th>Date / Created By</th>
                             <th>Image</th>
@@ -374,7 +414,7 @@ HTML_DASHBOARD_INDENT = """
                     <tbody>
                         {% for indent in indents %}
                         <tr class="{% if indent.received_status == 'Received' %}status-received{% endif %}">
-                            {% if session['role'] in ['Admin', 'SuperAdmin'] %}
+                            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
                             <td class="no-print text-center"><input type="checkbox" name="selected_ids[]" value="{{ indent.id }}" class="row-checkbox" form="bulkForm"></td>
                             {% endif %}
                             <td class="fw-bold text-secondary">{{ indent.fy }}/{{ indent.serial_no }}</td>
@@ -411,15 +451,19 @@ HTML_DASHBOARD_INDENT = """
                             </td>
                             <td class="no-print">
                                 <div class="btn-group">
-                                    {% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}
+                                    {% if session.get('permissions', {}).get('indent', {}).get('edit') %}
                                         <a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary border-0" title="Edit"><i class="bi bi-pencil-square"></i></a>
-                                        
+                                    {% endif %}
+                                    
+                                    {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
                                         {% if indent.purchase_status != 'Purchased' %}
                                             <a href="{{ url_for('mark_purchased', i_id=indent.id) }}" class="btn btn-sm btn-outline-success border-0" title="Mark Purchased" onclick="return confirm('Mark as Purchased?');"><i class="bi bi-cart-check"></i></a>
-                                        {% elif session['role'] in ['Admin', 'SuperAdmin'] %}
+                                        {% else %}
                                             <a href="{{ url_for('reset_purchase', i_id=indent.id) }}" class="btn btn-sm btn-outline-warning border-0" title="Reset Purchase" onclick="return confirm('Reset Purchase Status?');"><i class="bi bi-arrow-counterclockwise"></i></a>
                                         {% endif %}
-                                        
+                                    {% endif %}
+                                    
+                                    {% if session.get('permissions', {}).get('indent', {}).get('delete') %}
                                         <a href="{{ url_for('delete_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-danger border-0" title="Delete" onclick="return confirm('Delete?')"><i class="bi bi-trash"></i></a>
                                     {% endif %}
                                 </div>
@@ -429,7 +473,7 @@ HTML_DASHBOARD_INDENT = """
                     </tbody>
                 </table>
             </div>
-            {% if session['role'] in ['Admin', 'SuperAdmin'] %}</form>{% endif %}
+            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}</form>{% endif %}
             
             <div class="d-flex justify-content-between align-items-center p-3 bg-light border-top no-print">
                 <div class="small text-muted">Page {{ page }}</div>
@@ -472,7 +516,7 @@ HTML_CREATE_MULTI = """
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Indent Person</label><input type="text" name="indent_person" list="personList" class="form-control" placeholder="Type name..."><datalist id="personList">{% for p in persons %}<option value="{{ p }}">{% endfor %}</datalist></div>
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Assign To</label><select name="assigned_to" class="form-select">{% for user in users %}<option value="{{ user.name }}">{{ user.name }}</option>{% endfor %}</select></div>
                     
-                    {% if session['role'] in ['Admin', 'SuperAdmin'] %}
+                    {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
                     <div class="col-md-12 mt-3 pt-3 border-top">
                         <label class="fw-bold small text-uppercase text-danger d-block">Admin Override: Starting Serial No (Optional)</label>
                         <input type="number" name="manual_serial" class="form-control d-inline-block" style="width: 150px;" placeholder="e.g. 1">
@@ -533,7 +577,7 @@ HTML_EDIT = """
                     <label>Serial Number (Locked)</label>
                     <input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled>
                 </div>
-                {% if session['role'] in ['Admin', 'SuperAdmin'] %}
+                {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
                 <div class="row mb-3">
                     <div class="col-md-6">
                         <div class="p-3 bg-warning bg-opacity-10 border border-warning rounded">
@@ -611,16 +655,33 @@ HTML_EDIT = """
 </body></html>
 """
 
-HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Indent Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Department</label><input type="text" name="dept_filter" class="form-control" value="{{ filters.dept_filter }}"></div><div class="col-md-2"><label>Approval</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Approved" {% if filters.status == 'Approved' %}selected{% endif %}>Approved</option><option value="Hold" {% if filters.status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Received</label><select name="received_status" class="form-select"><option value="All">All</option><option value="Received" {% if filters.received_status == 'Received' %}selected{% endif %}>Received</option><option value="Pending" {% if filters.received_status == 'Pending' %}selected{% endif %}>Pending Receipt</option><option value="Rejected" {% if filters.received_status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Assigned To</label><select name="assigned_filter" class="form-select"><option value="All">All</option>{% for u in users %}<option value="{{ u.name }}" {% if filters.assigned_filter == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div><div class="col-md-2"><label>Sort By</label><select name="sort_by" class="form-select"><option value="Date" {% if filters.sort_by == 'Date' %}selected{% endif %}>Date</option><option value="Department" {% if filters.sort_by == 'Department' %}selected{% endif %}>Department</option><option value="Assigned" {% if filters.sort_by == 'Assigned' %}selected{% endif %}>Assigned Person</option></select></div><div class="col-md-10 text-end"><button type="submit" name="action" value="filter" class="btn btn-primary px-4">Filter</button><button type="submit" name="action" value="export" class="btn btn-success px-4">Export Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ indents|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm"><thead class="table-dark"><tr><th>S.No (FY)</th><th>Date</th><th>Dept</th><th>Person</th><th>Item</th><th>Qty</th><th>Remarks</th><th>Assigned</th><th>Action By</th><th>Status</th><th>Received</th><th class="no-print">Actions</th></tr></thead><tbody>{% for indent in indents %}<tr><td>{{ indent.fy }}/{{ indent.serial_no }}</td><td>{{ indent.indent_date | date_fmt }}</td><td>{{ indent.department }}</td><td>{{ indent.indent_person }}</td><td>{{ indent.item }}</td><td>{{ indent.quantity }} {{ indent.unit }}</td><td>{{ indent.remarks }}</td><td>{{ indent.assigned_to }}</td><td>{{ indent.approved_by_name if indent.approved_by_name else '' }}</td><td>{{ indent.approval_status }}</td><td>{% if indent.received_status == 'Received' %}Received ({{ indent.received_date | date_fmt }}){% else %}{{ indent.received_status }}{% endif %}</td><td class="no-print">{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
+HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Indent Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Department</label><input type="text" name="dept_filter" class="form-control" value="{{ filters.dept_filter }}"></div><div class="col-md-2"><label>Approval</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Approved" {% if filters.status == 'Approved' %}selected{% endif %}>Approved</option><option value="Hold" {% if filters.status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Received</label><select name="received_status" class="form-select"><option value="All">All</option><option value="Received" {% if filters.received_status == 'Received' %}selected{% endif %}>Received</option><option value="Pending" {% if filters.received_status == 'Pending' %}selected{% endif %}>Pending Receipt</option><option value="Rejected" {% if filters.received_status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Assigned To</label><select name="assigned_filter" class="form-select"><option value="All">All</option>{% for u in users %}<option value="{{ u.name }}" {% if filters.assigned_filter == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div><div class="col-md-2"><label>Sort By</label><select name="sort_by" class="form-select"><option value="Date" {% if filters.sort_by == 'Date' %}selected{% endif %}>Date</option><option value="Department" {% if filters.sort_by == 'Department' %}selected{% endif %}>Department</option><option value="Assigned" {% if filters.sort_by == 'Assigned' %}selected{% endif %}>Assigned Person</option></select></div><div class="col-md-10 text-end"><button type="submit" name="action" value="filter" class="btn btn-primary px-4">Filter</button><button type="submit" name="action" value="export" class="btn btn-success px-4">Export Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ indents|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm"><thead class="table-dark"><tr><th>S.No (FY)</th><th>Date</th><th>Dept</th><th>Person</th><th>Item</th><th>Qty</th><th>Remarks</th><th>Assigned</th><th>Action By</th><th>Status</th><th>Received</th><th class="no-print">Actions</th></tr></thead><tbody>{% for indent in indents %}<tr><td>{{ indent.fy }}/{{ indent.serial_no }}</td><td>{{ indent.indent_date | date_fmt }}</td><td>{{ indent.department }}</td><td>{{ indent.indent_person }}</td><td>{{ indent.item }}</td><td>{{ indent.quantity }} {{ indent.unit }}</td><td>{{ indent.remarks }}</td><td>{{ indent.assigned_to }}</td><td>{{ indent.approved_by_name if indent.approved_by_name else '' }}</td><td>{{ indent.approval_status }}</td><td>{% if indent.received_status == 'Received' %}Received ({{ indent.received_date | date_fmt }}){% else %}{{ indent.received_status }}{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('indent', {}).get('edit') %}<a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
+
+# ==========================================
+# PAYMENT TEMPLATES
+# ==========================================
+HTML_DASHBOARD_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Payment System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3>{% if session.get('permissions', {}).get('payment', {}).get('create') %}<a href="{{ url_for('create_payment') }}" class="btn btn-success">+ New Payment Entry</a>{% endif %}</div><div class="card shadow"><div class="card-body"><table class="table table-hover table-bordered align-middle table-sm"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>PARTY NAME</th><th>DETAILS</th><th>AMOUNT</th><th>APPROVED BY</th><th>STATUS</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for p in payments %}<tr><td class="fw-bold">{{ p.fy }}/{{ p.serial_no }}</td><td>{% if p.type == 'Advance' %}<span class="badge bg-info text-dark">Advance/PO</span>{% else %}<span class="badge bg-secondary">Bill</span>{% endif %}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }} | {{ p.item_detail }}<br><span class="text-muted small">Delivery: {{ p.delivery_time }}</span>{% else %}Bill: {{ p.bill_number }}<br><span class="text-muted small">Due: {{ p.due_date | date_fmt }}</span>{% endif %}</td><td class="fw-bold text-end">{{ p.amount }}</td><td>{{ p.approved_by }}</td><td>{% if p.status == 'Done' %}<span class="badge bg-success">Done</span>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('payment', {}).get('edit') %}<a href="{{ url_for('edit_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session.get('permissions', {}).get('payment', {}).get('delete') %}<a href="{{ url_for('delete_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="text-center">No records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 
 HTML_CREATE_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 800px;"><div class="card-header d-flex justify-content-between"><h4>New Payment / Order</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body"><ul class="nav nav-tabs mb-4" id="paymentTabs"><li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#regularBill" onclick="setMode('Bill')">Regular Bill Entry</a></li><li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#advanceOrder" onclick="setMode('Advance')">Advance / PO Entry</a></li></ul>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><input type="hidden" name="entry_type" id="entryType" value="Bill"><div class="tab-content"><div class="tab-pane fade show active" id="regularBill"><div class="mb-3"><label class="fw-bold">Party Name</label><input type="text" name="party_name" class="form-control" placeholder="Vendor Name"></div><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Bill Number</label><input type="text" name="bill_number" class="form-control"></div><div class="col-md-6"><label class="fw-bold">Bill Date</label><input type="date" name="bill_date" class="form-control" value="{{ today }}"></div></div><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Amount</label><input type="number" step="0.01" name="amount" class="form-control"></div><div class="col-md-6"><label class="fw-bold">Due Date</label><input type="date" name="due_date" class="form-control"></div></div></div><div class="tab-pane fade" id="advanceOrder"><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Party Name</label><input type="text" name="adv_party_name" class="form-control"></div><div class="col-md-6"><label class="fw-bold">Quotation No.</label><input type="text" name="quotation_no" class="form-control"></div></div><div class="p-3 bg-light border rounded mb-3"><h6 class="text-primary">Product Details</h6><div class="mb-2"><label>Product Name / Detail</label><input type="text" name="item_detail" class="form-control"></div><div class="row"><div class="col-md-3"><label>Qty</label><input type="number" step="0.01" name="qty" id="qty" class="form-control" oninput="calcTotal()"></div><div class="col-md-3"><label>Price</label><input type="number" step="0.01" name="price" id="price" class="form-control" oninput="calcTotal()"></div><div class="col-md-3"><label>Tax</label><input type="number" step="0.01" name="tax" id="tax" class="form-control" oninput="calcTotal()" value="0"></div><div class="col-md-3"><label>Freight</label><input type="number" step="0.01" name="freight" id="freight" class="form-control" oninput="calcTotal()" value="0"></div></div><div class="mt-2 text-end"><h5>Total: <span id="totalDisplay">0.00</span></h5><input type="hidden" name="adv_amount" id="advAmount"></div></div><div class="row mb-3"><div class="col-md-6"><label class="fw-bold">Payment Type</label><select name="payment_type" class="form-select" onchange="toggleBank(this)"><option value="Credit">Credit</option><option value="Advance">Advance</option></select></div><div class="col-md-6"><label class="fw-bold">Delivery Time</label><input type="text" name="delivery_time" class="form-control" placeholder="e.g. 7 Days"></div></div><div id="bankDetails" class="d-none p-3 border border-warning rounded bg-warning bg-opacity-10 mb-3"><h6>Bank Details (Required for Advance)</h6><div class="row"><div class="col-md-3"><label class="small fw-bold">Bank Name</label><input type="text" name="bank_name" class="form-control" placeholder="Bank Name"></div><div class="col-md-3"><label class="small fw-bold">Branch Name</label><input type="text" name="branch_name" class="form-control" placeholder="Branch"></div><div class="col-md-3"><label class="small fw-bold">Account No</label><input type="text" name="account_no" class="form-control" placeholder="Account No"></div><div class="col-md-3"><label class="small fw-bold">IFSC Code</label><input type="text" name="ifsc" class="form-control" placeholder="IFSC Code"></div></div></div></div></div><div class="mb-3 mt-3"><label class="fw-bold">Approved By</label><input type="text" name="approved_by" class="form-control" required placeholder="Enter Name"></div><button type="submit" class="btn btn-success w-100">Save Entry</button><a href="{{ url_for('payment_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function setMode(mode){document.getElementById('entryType').value=mode;}function toggleBank(select){var bankDiv=document.getElementById('bankDetails');if(select.value==='Advance')bankDiv.classList.remove('d-none');else bankDiv.classList.add('d-none');}function calcTotal(){var qty=parseFloat(document.getElementById('qty').value)||0;var price=parseFloat(document.getElementById('price').value)||0;var tax=parseFloat(document.getElementById('tax').value)||0;var freight=parseFloat(document.getElementById('freight').value)||0;var total=(qty*price)+tax+freight;document.getElementById('totalDisplay').innerText=total.toFixed(2);document.getElementById('advAmount').value=total.toFixed(2);}</script></body></html>"""
 HTML_EDIT_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 700px;"><div class="card-header d-flex justify-content-between"><h4>Edit Payment</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><div class="mb-3"><label>Serial Number (FY)</label><input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled></div>{% if data.type == 'Advance' %}<div class="alert alert-info">Advance Order Entry</div><div class="row mb-2"><div class="col-md-6"><label>Party Name</label><input type="text" name="party_name" class="form-control" value="{{ data.party_name }}"></div><div class="col-md-6"><label>Quotation No</label><input type="text" name="quotation_no" class="form-control" value="{{ data.quotation_no }}"></div></div><div class="row mb-2"><div class="col-md-6"><label>Item</label><input type="text" name="item_detail" class="form-control" value="{{ data.item_detail }}"></div><div class="col-md-6"><label>Amount</label><input type="number" step="0.01" name="amount" class="form-control" value="{{ data.amount }}"></div></div><div class="row mb-2"><div class="col-md-4"><label>Qty</label><input type="text" name="qty" class="form-control" value="{{ data.qty }}"></div><div class="col-md-4"><label>Price</label><input type="text" name="price" class="form-control" value="{{ data.price }}"></div><div class="col-md-4"><label>Tax</label><input type="text" name="tax" class="form-control" value="{{ data.tax }}"></div></div><div class="row mb-2"><div class="col-md-6"><label>Payment Type</label><input type="text" name="payment_type" class="form-control" value="{{ data.payment_type }}"></div><div class="col-md-6"><label>Delivery Time</label><input type="text" name="delivery_time" class="form-control" value="{{ data.delivery_time }}"></div></div><div class="mb-2"><label>Bank Details</label><input type="text" name="bank_details" class="form-control" value="{{ data.bank_details }}"></div>{% else %}<div class="alert alert-secondary">Regular Bill Entry</div><div class="row mb-3"><div class="col-md-12 mb-2"><label class="fw-bold">Party Name</label><input type="text" name="party_name" class="form-control" value="{{ data.party_name }}" required></div><div class="col-md-6 mb-2"><label class="fw-bold">Bill Number</label><input type="text" name="bill_number" class="form-control" value="{{ data.bill_number }}" required></div><div class="col-md-6 mb-2"><label class="fw-bold">Bill Date</label><input type="date" name="bill_date" class="form-control" value="{{ data.bill_date }}" required></div><div class="col-md-6"><label class="fw-bold">Amount</label><input type="number" step="0.01" name="amount" class="form-control" value="{{ data.amount }}" required></div><div class="col-md-6"><label class="fw-bold">Due Date</label><input type="date" name="due_date" class="form-control" value="{{ data.due_date }}" required></div></div>{% endif %}<div class="col-md-12 mt-2"><label class="fw-bold">Approved By (Manual)</label><input type="text" name="approved_by" class="form-control" value="{{ data.approved_by }}" required></div><div class="mb-3 mt-3 p-3 border rounded border-warning bg-warning bg-opacity-10"><h5 class="text-dark">Status & Payment</h5><div class="mb-3"><label class="fw-bold">Status</label><select name="status" class="form-select" id="statusSelect" onchange="toggleDetails()"><option value="Pending" {% if data.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Done" {% if data.status == 'Done' %}selected{% endif %}>Done (Paid)</option></select></div><div id="paymentDetails" class="{% if data.status != 'Done' %}d-none{% endif %}"><div class="row"><div class="col-md-6 mb-2"><label class="fw-bold">Payment Date</label><input type="date" name="payment_date" class="form-control" value="{{ data.payment_date }}"></div><div class="col-md-6 mb-2"><label class="fw-bold">Mode</label><select name="payment_mode" class="form-select"><option value="" selected disabled>Select</option><option value="NEFT" {% if data.payment_mode == 'NEFT' %}selected{% endif %}>NEFT</option><option value="RTGS" {% if data.payment_mode == 'RTGS' %}selected{% endif %}>RTGS</option><option value="UPI" {% if data.payment_mode == 'UPI' %}selected{% endif %}>UPI</option><option value="CHEQUE" {% if data.payment_mode == 'CHEQUE' %}selected{% endif %}>CHEQUE</option><option value="CASH" {% if data.payment_mode == 'CASH' %}selected{% endif %}>CASH</option></select></div><div class="col-md-12"><label class="fw-bold">Ref No.</label><input type="text" name="transaction_ref" class="form-control" value="{{ data.transaction_ref }}"></div></div></div></div><button type="submit" class="btn btn-success w-100">Update</button><a href="{{ url_for('payment_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function toggleDetails(){var status=document.getElementById("statusSelect").value;var detailsDiv=document.getElementById("paymentDetails");if(status==="Done")detailsDiv.classList.remove("d-none");else detailsDiv.classList.add("d-none");}</script></body></html>"""
-HTML_DASHBOARD_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Payment System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3>{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('create_payment') }}" class="btn btn-success">+ New Payment Entry</a>{% endif %}</div><div class="card shadow"><div class="card-body"><table class="table table-hover table-bordered align-middle table-sm"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>PARTY NAME</th><th>DETAILS</th><th>AMOUNT</th><th>APPROVED BY</th><th>STATUS</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for p in payments %}<tr><td class="fw-bold">{{ p.fy }}/{{ p.serial_no }}</td><td>{% if p.type == 'Advance' %}<span class="badge bg-info text-dark">Advance/PO</span>{% else %}<span class="badge bg-secondary">Bill</span>{% endif %}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }} | {{ p.item_detail }}<br><span class="text-muted small">Delivery: {{ p.delivery_time }}</span>{% else %}Bill: {{ p.bill_number }}<br><span class="text-muted small">Due: {{ p.due_date | date_fmt }}</span>{% endif %}</td><td class="fw-bold text-end">{{ p.amount }}</td><td>{{ p.approved_by }}</td><td>{% if p.status == 'Done' %}<span class="badge bg-success">Done</span>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('edit_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session['role'] in ['Admin', 'SuperAdmin', 'Editor'] %}<a href="{{ url_for('delete_payment', p_id=p.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="text-center">No records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 HTML_REPORTS_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Payment Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Party Name</label><input type="text" name="party_filter" class="form-control" value="{{ filters.party_filter }}"></div><div class="col-md-2"><label>Status</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Done" {% if filters.status == 'Done' %}selected{% endif %}>Done</option></select></div><div class="col-md-2 d-flex align-items-end gap-2"><button type="submit" name="action" value="filter" class="btn btn-primary w-50">Filter</button><button type="submit" name="action" value="export" class="btn btn-success w-50">Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Payment Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ payments|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm align-middle"><thead class="table-dark"><tr><th>SR</th><th>TYPE</th><th>PARTY</th><th>REF/BILL</th><th>ITEM/DETAILS</th><th>AMOUNT</th><th>STATUS</th></tr></thead><tbody>{% for p in payments %}<tr><td>{{ p.fy }}/{{ p.serial_no }}</td><td>{{ p.type }}</td><td>{{ p.party_name }}</td><td>{% if p.type == 'Advance' %}Qt: {{ p.quotation_no }}{% else %}Bill: {{ p.bill_number }}{% endif %}</td><td>{% if p.type == 'Advance' %}{{ p.item_detail }} (Qty: {{ p.qty }}){% else %}Bill Date: {{ p.bill_date | date_fmt }}{% endif %}</td><td>{{ p.amount }}</td><td>{{ p.status }}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 
-HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h2 class="mb-4 text-green">Admin Settings</h2><ul class="nav nav-tabs" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#fys">Financial Years</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#units">Manage Units</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#users">Manage Users</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs">Login Logs</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#maintenance">Maintenance <i class="bi bi-tools text-danger"></i></button></li></ul><div class="tab-content pt-4">
+# ==========================================
+# GATEPASS TEMPLATES
+# ==========================================
+HTML_DASHBOARD_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Gate Pass System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3><div class="d-flex gap-2 align-items-center"><form method="GET" class="d-flex"><div class="input-group" style="width: 250px;"><input type="text" name="search" class="form-control form-control-sm" placeholder="Search Company, Product, Person..." value="{{ request.args.get('search', '') }}"><button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>{% if request.args.get('search') %}<a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>{% endif %}</div></form>{% if session.get('permissions', {}).get('gatepass', {}).get('create') %}<a href="{{ url_for('create_gatepass') }}" class="btn btn-success">+ New Gate Pass</a>{% endif %}</div></div>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category if category != 'message' else 'info' }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<div class="card shadow"><div class="card-body p-0"><div class="table-responsive"><table class="table table-hover table-bordered align-middle table-sm mb-0"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>OUT DATE</th><th>COMPANY</th><th>PRODUCT / QTY</th><th>CARRIER (BY HAND)</th><th>REASON / REMARK</th><th>STATUS / CLEARED</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for gp in gatepasses %}<tr class="{% if gp.status == 'Cleared' %}status-cleared{% endif %}"><td class="fw-bold">{{ gp.fy }}/{{ gp.serial_no }}</td><td>{% if gp.type == 'RGP' %}<span class="badge bg-warning text-dark">RGP</span>{% else %}<span class="badge bg-secondary">NRGP</span>{% endif %}</td><td>{{ gp.out_date | date_fmt }}</td><td class="fw-bold">{{ gp.company_name }}</td><td><span class="text-green fw-bold">{{ gp.product }}</span><br><small class="text-muted">Qty: {{ gp.qty }}</small></td><td>{{ gp.by_hand_person }}<br><small class="text-muted fst-italic">{{ gp.purpose }}</small></td><td><small class="d-block text-muted"><strong>Rsn:</strong> {{ gp.reason }}</small><small class="d-block text-muted"><strong>Rmk:</strong> {{ gp.remark }}</small></td><td>{% if gp.status == 'Cleared' %}<span class="badge bg-success">Cleared</span><div class="small-meta">On: {{ gp.clear_date | date_fmt }}</div><div class="small-meta">By: {{ gp.clear_by }}</div>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('gatepass', {}).get('edit') %}<a href="{{ url_for('edit_gatepass', gp_id=gp.id) }}" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session.get('permissions', {}).get('gatepass', {}).get('delete') %}<a href="{{ url_for('delete_gatepass', gp_id=gp.id) }}" class="btn btn-sm btn-outline-danger py-0" onclick="return confirm('Delete Gate Pass?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="9" class="text-center py-4">No Gate Pass records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></div></body></html>"""
+HTML_CREATE_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 800px;"><div class="card-header d-flex justify-content-between"><h4>New Gate Pass Entry</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Pass Type</label><select name="gp_type" class="form-select" required><option value="RGP">RGP (Returnable)</option><option value="NRGP">NRGP (Non-Returnable)</option></select></div><div class="col-md-4"><label class="fw-bold">Out Date (Pending From)</label><input type="date" name="out_date" class="form-control" value="{{ today }}" required></div><div class="col-md-4"><label class="fw-bold">Company Name</label><select name="company_select" class="form-select" onchange="checkCompany(this)" required><option value="" disabled selected>Select Company</option>{% for c in companies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}<option value="Other">Other (Add New)</option></select><input type="text" name="custom_company" class="form-control mt-2 d-none" placeholder="Enter New Company" id="customCompanyInput"></div></div><div class="row mb-3"><div class="col-md-5"><label class="fw-bold">Product / Item</label><input type="text" name="product" class="form-control" required></div><div class="col-md-3"><label class="fw-bold">Quantity</label><input type="text" name="qty" class="form-control" required></div><div class="col-md-4"><label class="fw-bold">By Hand Person Name</label><select name="by_hand_person" class="form-select" required><option value="" disabled selected>Select Person</option>{% for u in users %}<option value="{{ u.name }}">{{ u.name }}</option>{% endfor %}</select></div></div><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Purpose</label><input type="text" name="purpose" class="form-control"></div><div class="col-md-4"><label class="fw-bold">Reason</label><input type="text" name="reason" class="form-control"></div><div class="col-md-4"><label class="fw-bold">Remark</label><input type="text" name="remark" class="form-control"></div></div><button type="submit" class="btn btn-success w-100">Create Gate Pass</button><a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function checkCompany(selectObj) { var customInput = document.getElementById('customCompanyInput'); if(selectObj.value === 'Other') { customInput.classList.remove('d-none'); customInput.required = true; customInput.focus(); } else { customInput.classList.add('d-none'); customInput.required = false; } }</script></body></html>"""
+HTML_EDIT_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 800px;"><div class="card-header d-flex justify-content-between"><h4>Edit Gate Pass</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><div class="mb-3"><label>Serial Number (FY)</label><input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled></div><div class="row mb-3 p-3 bg-warning bg-opacity-10 border border-warning rounded"><div class="col-md-4"><label class="fw-bold">Clearance Status</label><select name="status" id="gpStatus" class="form-select" onchange="toggleClear()"><option value="Pending" {% if data.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Cleared" {% if data.status == 'Cleared' %}selected{% endif %}>Cleared</option></select></div><div class="col-md-4"><label class="fw-bold">Clear Date</label><input type="date" name="clear_date" id="clearDate" class="form-control {% if data.status != 'Cleared' %}d-none{% endif %}" value="{{ data.clear_date }}"></div><div class="col-md-4"><label class="fw-bold">Cleared By / Purpose</label><input type="text" name="clear_by" id="clearBy" class="form-control {% if data.status != 'Cleared' %}d-none{% endif %}" value="{{ data.clear_by }}" placeholder="Person who received it back"></div></div><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Pass Type</label><select name="gp_type" class="form-select" required><option value="RGP" {% if data.type == 'RGP' %}selected{% endif %}>RGP</option><option value="NRGP" {% if data.type == 'NRGP' %}selected{% endif %}>NRGP</option></select></div><div class="col-md-4"><label class="fw-bold">Out Date</label><input type="date" name="out_date" class="form-control" value="{{ data.out_date }}" required></div><div class="col-md-4"><label class="fw-bold">Company Name</label><input type="text" name="company_name" class="form-control" value="{{ data.company_name }}" required list="companyList"><datalist id="companyList">{% for c in companies %}<option value="{{ c }}">{% endfor %}</datalist></div></div><div class="row mb-3"><div class="col-md-5"><label class="fw-bold">Product / Item</label><input type="text" name="product" class="form-control" value="{{ data.product }}" required></div><div class="col-md-3"><label class="fw-bold">Quantity</label><input type="text" name="qty" class="form-control" value="{{ data.qty }}" required></div><div class="col-md-4"><label class="fw-bold">By Hand Person Name</label><select name="by_hand_person" class="form-select" required>{% for u in users %}<option value="{{ u.name }}" {% if data.by_hand_person == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div></div><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Purpose</label><input type="text" name="purpose" class="form-control" value="{{ data.purpose }}"></div><div class="col-md-4"><label class="fw-bold">Reason</label><input type="text" name="reason" class="form-control" value="{{ data.reason }}"></div><div class="col-md-4"><label class="fw-bold">Remark</label><input type="text" name="remark" class="form-control" value="{{ data.remark }}"></div></div><button type="submit" class="btn btn-success w-100">Update Gate Pass</button><a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function toggleClear(){var s=document.getElementById("gpStatus").value;var d=document.getElementById("clearDate");var b=document.getElementById("clearBy");if(s==="Cleared"){d.classList.remove("d-none");b.classList.remove("d-none");if(!d.value){var today = new Date(); d.value = today.toISOString().split('T')[0];}}else{d.classList.add("d-none");b.classList.add("d-none");}}</script></body></html>"""
+HTML_REPORTS_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Gate Pass Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Type</label><select name="gp_type" class="form-select"><option value="All">All</option><option value="RGP" {% if filters.gp_type == 'RGP' %}selected{% endif %}>RGP</option><option value="NRGP" {% if filters.gp_type == 'NRGP' %}selected{% endif %}>NRGP</option></select></div><div class="col-md-2"><label>Status</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Cleared" {% if filters.status == 'Cleared' %}selected{% endif %}>Cleared</option></select></div><div class="col-md-2"><label>Company / Person</label><input type="text" name="search_filter" class="form-control" placeholder="Search..." value="{{ filters.search_filter }}"></div><div class="col-md-2 d-flex align-items-end gap-2"><button type="submit" name="action" value="filter" class="btn btn-primary w-50">Filter</button><button type="submit" name="action" value="export" class="btn btn-success w-50">Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Gate Pass Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ gatepasses|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm align-middle"><thead class="table-dark"><tr><th>SR</th><th>TYPE</th><th>OUT DATE</th><th>COMPANY</th><th>PRODUCT / QTY</th><th>CARRIER / PURPOSE</th><th>STATUS</th><th>CLEAR DATE / BY</th></tr></thead><tbody>{% for gp in gatepasses %}<tr><td>{{ gp.fy }}/{{ gp.serial_no }}</td><td>{{ gp.type }}</td><td>{{ gp.out_date | date_fmt }}</td><td>{{ gp.company_name }}</td><td>{{ gp.product }} (Qty: {{ gp.qty }})</td><td>{{ gp.by_hand_person }}<br><small>{{ gp.purpose }}</small></td><td>{{ gp.status }}</td><td>{% if gp.status == 'Cleared' %}{{ gp.clear_date | date_fmt }} ({{ gp.clear_by }}){% else %}-{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
+
+# ==========================================
+# SETTINGS TEMPLATES
+# ==========================================
+HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h2 class="mb-4 text-green">Admin Settings</h2><ul class="nav nav-tabs" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#fys">Financial Years</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#units">Manage Units</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#companies">Manage Companies</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#users">Manage Users</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs">Login Logs</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#maintenance">Maintenance <i class="bi bi-tools text-danger"></i></button></li></ul><div class="tab-content pt-4">
 <div class="tab-pane fade show active" id="fys"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-warning text-dark fw-bold">Create New Financial Year</div><div class="card-body"><form method="POST" action="{{ url_for('add_fy') }}"><div class="mb-2"><label>Format: YYYY-YY (e.g. 2026-27)</label><input type="text" name="fy_name" class="form-control" placeholder="2026-27" required></div><button class="btn btn-warning w-100" type="submit">Create FY</button></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Available Financial Years</div><div class="card-body"><table class="table table-sm"><thead><tr><th>FY Name</th><th>Action</th></tr></thead><tbody>{% for fy in available_fys %}<tr><td class="fw-bold">{{ fy }}</td><td><a href="{{ url_for('delete_fy', fy_name=fy) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Caution: Deleting this removes it from the dropdown. Records will not be deleted, but they may become inaccessible from the UI. Continue?')">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
-<div class="tab-pane fade" id="units"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-secondary text-white">Add New Unit</div><div class="card-body"><form method="POST" action="{{ url_for('add_unit') }}"><div class="input-group"><input type="text" name="unit_name" class="form-control" placeholder="e.g. PACKET" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Units</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Unit Name</th><th>Action</th></tr></thead><tbody>{% for u in units %}<tr><td>{{ u.name }}</td><td><a href="{{ url_for('delete_unit', uid=u.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div><div class="tab-pane fade" id="users"><div class="d-flex justify-content-end mb-2"><a href="{{ url_for('edit_user', uid='new') }}" class="btn btn-success">+ Create User</a></div><div class="card shadow"><div class="card-body"><table class="table"><thead class="table-dark"><tr><th>Name</th><th>Username</th><th>Role</th><th>Password</th><th>Actions</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user.name }}</td><td>{{ user.username }}</td><td>{{ user.role }}</td><td class="font-monospace">{% if session['role'] == 'SuperAdmin' %}<span class="text-danger">{{ user.password }}</span>{% else %}******{% endif %}</td><td><a href="{{ url_for('edit_user', uid=user.id) }}" class="btn btn-sm btn-primary">Edit</a>{% if session['role'] == 'SuperAdmin' %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% elif session['role'] == 'Admin' and user.role not in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div><div class="tab-pane fade" id="logs"><div class="card shadow"><div class="card-header bg-info text-white">Recent Logins (Last 50)</div><div class="card-body">{% if session['role'] == 'SuperAdmin' %}<table class="table table-striped table-sm"><thead><tr><th>Time</th><th>Name</th><th>Username</th><th>Role</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.timestamp | datetime_fmt }}</td><td>{{ log.name }}</td><td>{{ log.username }}</td><td>{{ log.role }}</td></tr>{% else %}<tr><td colspan="4" class="text-center">No logs found</td></tr>{% endfor %}</tbody></table>{% else %}<div class="alert alert-warning text-center">Only SuperAdmin can view logs.</div>{% endif %}</div></div></div>
+<div class="tab-pane fade" id="units"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-secondary text-white">Add New Unit</div><div class="card-body"><form method="POST" action="{{ url_for('add_unit') }}"><div class="input-group"><input type="text" name="unit_name" class="form-control" placeholder="e.g. PACKET" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Units</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Unit Name</th><th>Action</th></tr></thead><tbody>{% for u in units %}<tr><td>{{ u.name }}</td><td><a href="{{ url_for('delete_unit', uid=u.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
+<div class="tab-pane fade" id="companies"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-primary text-white">Add New Company</div><div class="card-body"><form method="POST" action="{{ url_for('add_company') }}"><div class="input-group"><input type="text" name="company_name" class="form-control" placeholder="e.g. ABC CORP" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Companies</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Company Name</th><th>Action</th></tr></thead><tbody>{% for c in companies %}<tr><td>{{ c.name }}</td><td><a href="{{ url_for('delete_company', cid=c.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
+<div class="tab-pane fade" id="users"><div class="d-flex justify-content-end mb-2"><a href="{{ url_for('edit_user', uid='new') }}" class="btn btn-success">+ Create User</a></div><div class="card shadow"><div class="card-body"><table class="table"><thead class="table-dark"><tr><th>Name</th><th>Username</th><th>Role</th><th>Password</th><th>Actions</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user.name }}</td><td>{{ user.username }}</td><td>{{ user.role }}</td><td class="font-monospace">{% if session['role'] == 'SuperAdmin' %}<span class="text-danger">{{ user.password }}</span>{% else %}******{% endif %}</td><td><a href="{{ url_for('edit_user', uid=user.id) }}" class="btn btn-sm btn-primary">Edit</a>{% if session['role'] == 'SuperAdmin' %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% elif session['role'] == 'Admin' and user.role not in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div><div class="tab-pane fade" id="logs"><div class="card shadow"><div class="card-header bg-info text-white">Recent Logins (Last 50)</div><div class="card-body">{% if session['role'] == 'SuperAdmin' %}<table class="table table-striped table-sm"><thead><tr><th>Time</th><th>Name</th><th>Username</th><th>Role</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.timestamp | datetime_fmt }}</td><td>{{ log.name }}</td><td>{{ log.username }}</td><td>{{ log.role }}</td></tr>{% else %}<tr><td colspan="4" class="text-center">No logs found</td></tr>{% endfor %}</tbody></table>{% else %}<div class="alert alert-warning text-center">Only SuperAdmin can view logs.</div>{% endif %}</div></div></div>
 <div class="tab-pane fade" id="maintenance">
     <div class="card shadow border-danger mb-4">
         <div class="card-header bg-danger text-white fw-bold"><i class="bi bi-exclamation-triangle-fill me-2"></i>Database Maintenance & Serial Fix</div>
@@ -633,7 +694,7 @@ HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bod
             <div class="alert alert-warning"><strong>Notice:</strong> Use this tool if you have duplicate serial numbers or if numbers are out of order. This will <strong>sort all entries chronologically by Date</strong> and permanently re-assign serial numbers sequentially starting from 1.</div>
             <form method="POST" action="{{ url_for('fix_serials') }}" onsubmit="return confirm('Are you sure you want to completely re-sequence the serial numbers for this Financial Year? This action cannot be undone.');">
                 <div class="row align-items-end">
-                    <div class="col-md-4"><label class="fw-bold">Select Collection</label><select name="collection_name" class="form-select" required><option value="indents">Indents System</option><option value="payments">Payments System</option></select></div>
+                    <div class="col-md-4"><label class="fw-bold">Select Collection</label><select name="collection_name" class="form-select" required><option value="indents">Indents System</option><option value="payments">Payments System</option><option value="gatepasses">Gate Pass System</option></select></div>
                     <div class="col-md-4"><label class="fw-bold">Financial Year</label><select name="fy_name" class="form-select" required>{% for fy in available_fys %}<option value="{{ fy }}">{{ fy }}</option>{% endfor %}</select></div>
                     <div class="col-md-4"><button type="submit" class="btn btn-danger w-100 fw-bold"><i class="bi bi-tools"></i> Re-Sort & Fix Serials by Date</button></div>
                 </div>
@@ -666,7 +727,73 @@ HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bod
     </div>
 </div>
 </div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script></body></html>"""
-HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 500px;"><div class="card-header bg-success text-white"><h4>{{ 'Create' if uid == 'new' else 'Modify' }} User</h4></div><div class="card-body"><form method="POST"><div class="mb-3"><label>Name</label><input type="text" name="name" class="form-control" value="{{ user.name if user else '' }}" required></div><div class="mb-3"><label>Username</label><input type="text" name="username" class="form-control" value="{{ user.username if user else '' }}" required></div><div class="mb-3"><label>Password</label>{% if uid == 'new' %}<input type="text" name="password" class="form-control" required placeholder="Set initial password">{% elif session['role'] == 'SuperAdmin' %}<input type="text" name="password" class="form-control" placeholder="Enter new to change" value="{{ user.password }}">{% else %}<input type="text" class="form-control" value="******" disabled><small class="text-muted d-block mt-1"><i class="bi bi-lock-fill"></i> Only SuperAdmin can change other users' passwords.<br>Users can change their own password from the login screen.</small>{% endif %}</div><div class="mb-3"><label>Role</label><select name="role" class="form-select"><option value="Viewer" {% if user and user.role == 'Viewer' %}selected{% endif %}>Viewer (View Assigned & Receive)</option><option value="Editor" {% if user and user.role == 'Editor' %}selected{% endif %}>Editor (Data Entry)</option><option value="Admin" {% if user and user.role == 'Admin' %}selected{% endif %}>Admin (Standard)</option>{% if session['role'] == 'SuperAdmin' %}<option value="SuperAdmin" {% if user and user.role == 'SuperAdmin' %}selected{% endif %}>SuperAdmin (Full Access)</option>{% endif %}</select></div><button type="submit" class="btn btn-success w-100">Save</button></form></div></div></div></body></html>"""
+
+HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """
+<div class="container mt-5 mb-5">
+    <div class="card shadow mx-auto" style="max-width: 600px;">
+        <div class="card-header bg-success text-white"><h4>{{ 'Create' if uid == 'new' else 'Modify' }} User</h4></div>
+        <div class="card-body">
+            <form method="POST">
+                <div class="mb-3"><label class="fw-bold">Name</label><input type="text" name="name" class="form-control" value="{{ user.name if user else '' }}" required></div>
+                <div class="mb-3"><label class="fw-bold">Username</label><input type="text" name="username" class="form-control" value="{{ user.username if user else '' }}" required></div>
+                <div class="mb-3"><label class="fw-bold">Password</label>
+                    {% if uid == 'new' %}<input type="text" name="password" class="form-control" required placeholder="Set initial password">
+                    {% elif session['role'] == 'SuperAdmin' or (session['role'] == 'Admin' and user.role != 'SuperAdmin') %}
+                        <input type="text" name="password" class="form-control" placeholder="Enter new to change" value="{{ user.password }}">
+                    {% else %}<input type="text" class="form-control" value="******" disabled><small class="text-muted d-block mt-1"><i class="bi bi-lock-fill"></i> Only Admins can change passwords.</small>
+                    {% endif %}
+                </div>
+                
+                <div class="mb-4">
+                    <label class="fw-bold">Role Title (Label Only)</label>
+                    <select name="role" class="form-select">
+                        <option value="Viewer" {% if user and user.role == 'Viewer' %}selected{% endif %}>Viewer</option>
+                        <option value="Editor" {% if user and user.role == 'Editor' %}selected{% endif %}>Editor</option>
+                        <option value="Admin" {% if user and user.role == 'Admin' %}selected{% endif %}>Admin</option>
+                        {% if session['role'] == 'SuperAdmin' %}<option value="SuperAdmin" {% if user and user.role == 'SuperAdmin' %}selected{% endif %}>SuperAdmin</option>{% endif %}
+                    </select>
+                </div>
+                
+                <div class="mb-3 border p-3 bg-light rounded">
+                    <h6 class="text-success fw-bold border-bottom pb-2">Custom Feature Access</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm text-center align-middle bg-white">
+                            <thead>
+                                <tr>
+                                    <th class="text-start">Module</th>
+                                    <th>View</th>
+                                    <th>Create</th>
+                                    <th>Edit</th>
+                                    <th>Delete</th>
+                                    <th>Approve</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for mod in ['indent', 'payment', 'gatepass'] %}
+                                <tr>
+                                    <td class="text-start fw-bold text-capitalize">{{ mod }}</td>
+                                    <td><input type="checkbox" name="perm_{{mod}}_view" class="form-check-input" {% if p_dict[mod]['view'] %}checked{% endif %}></td>
+                                    <td><input type="checkbox" name="perm_{{mod}}_create" class="form-check-input" {% if p_dict[mod]['create'] %}checked{% endif %}></td>
+                                    <td><input type="checkbox" name="perm_{{mod}}_edit" class="form-check-input" {% if p_dict[mod]['edit'] %}checked{% endif %}></td>
+                                    <td><input type="checkbox" name="perm_{{mod}}_delete" class="form-check-input" {% if p_dict[mod]['delete'] %}checked{% endif %}></td>
+                                    <td><input type="checkbox" name="perm_{{mod}}_approve" class="form-check-input" {% if p_dict[mod]['approve'] %}checked{% endif %}></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input type="checkbox" name="perm_settings_view" id="permSet" class="form-check-input" {% if p_dict['settings']['view'] %}checked{% endif %}>
+                        <label class="form-check-label fw-bold" for="permSet">Access Admin Settings Page</label>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-success w-100 fw-bold">Save User & Permissions</button>
+            </form>
+        </div>
+    </div>
+</div>
+</body></html>"""
 
 
 # ==========================================
@@ -684,14 +811,24 @@ def login():
             session.permanent = True
             
             current_fy = get_fy_string(datetime.now())
-            
             if not list(db.collection('financial_years').where('name', '==', current_fy).limit(1).stream()):
                 db.collection('financial_years').add({'name': current_fy})
+                
+            perms = ud.get('permissions')
+            if not perms:
+                perms = get_default_permissions(ud.get('role', 'Viewer'))
+                
+            # GUARANTEE SUPERADMIN/ADMIN ALWAYS HAVE SETTINGS ACCESS (Fail-safe)
+            if ud.get('role') in ['Admin', 'SuperAdmin']:
+                if 'settings' not in perms:
+                    perms['settings'] = {}
+                perms['settings']['view'] = True
                 
             session.update({
                 'user_id': user.id, 
                 'user_name': ud['name'], 
                 'role': ud['role'],
+                'permissions': perms,
                 'active_fy': current_fy 
             })
             db.collection('login_logs').add({'username': ud['username'], 'name': ud['name'], 'role': ud['role'], 'timestamp': datetime.utcnow()})
@@ -729,7 +866,9 @@ def logout():
 @app.route('/')
 def dashboard():
     if 'user_id' not in session: return redirect(url_for('login'))
-    
+    if not session.get('permissions', {}).get('indent', {}).get('view', True):
+        return redirect(url_for('payment_dashboard'))
+        
     page = request.args.get('page', 1, type=int)
     search_query = request.args.get('search', '').strip().lower()
     status_filter = request.args.get('status', 'All') 
@@ -795,7 +934,7 @@ def dashboard():
 
 @app.route('/create', methods=['GET', 'POST'])
 def create():
-    if 'user_id' not in session or session['role'] == 'Viewer': return redirect(url_for('dashboard'))
+    if not session.get('permissions', {}).get('indent', {}).get('create'): return redirect(url_for('dashboard'))
     active_fy = session.get('active_fy')
     
     if request.method == 'POST':
@@ -825,7 +964,7 @@ def create():
         existing_units = get_units_list()
         
         manual_start = request.form.get('manual_serial')
-        if manual_start and str(manual_start).strip().isdigit() and session['role'] in ['Admin', 'SuperAdmin']:
+        if manual_start and str(manual_start).strip().isdigit() and session.get('permissions', {}).get('indent', {}).get('approve'):
             next_sn = int(manual_start)
             db.collection('counters').document(f"indents_{active_fy}").set({
                 'last_value': next_sn + len(items) - 1
@@ -885,7 +1024,7 @@ def create():
 
 @app.route('/edit/<i_id>', methods=['GET', 'POST'])
 def edit_indent(i_id):
-    if 'user_id' not in session or session['role'] == 'Viewer': return redirect(url_for('dashboard'))
+    if not session.get('permissions', {}).get('indent', {}).get('edit'): return redirect(url_for('dashboard'))
     doc_ref = db.collection('indents').document(i_id)
     data = doc_ref.get().to_dict()
     doc_fy = data.get('fy') or get_fy_string(data.get('created_at') or datetime.now())
@@ -923,7 +1062,7 @@ def edit_indent(i_id):
             else:
                 flash("New image exceeds 200 KB limit. Image was not updated.", "warning")
 
-        if session['role'] in ['Admin', 'SuperAdmin']:
+        if session.get('permissions', {}).get('indent', {}).get('approve'):
              if 'approval_status' in request.form: 
                  new_status = request.form['approval_status']
                  update_data['approval_status'] = new_status
@@ -956,7 +1095,7 @@ def edit_indent(i_id):
 
 @app.route('/delete/<i_id>')
 def delete_indent(i_id):
-    if session['role'] not in ['Admin', 'SuperAdmin', 'Editor']: return redirect(url_for('dashboard'))
+    if not session.get('permissions', {}).get('indent', {}).get('delete'): return redirect(url_for('dashboard'))
     doc = db.collection('indents').document(i_id).get().to_dict()
     doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
     
@@ -968,7 +1107,7 @@ def delete_indent(i_id):
 
 @app.route('/purchase/<i_id>')
 def mark_purchased(i_id):
-    if session.get('role') not in ['Editor', 'Admin', 'SuperAdmin']: return redirect(url_for('dashboard'))
+    if not session.get('permissions', {}).get('indent', {}).get('approve'): return redirect(url_for('dashboard'))
     db.collection('indents').document(i_id).update({
         'purchase_status': 'Purchased',
         'purchased_by': session['user_name'],
@@ -979,8 +1118,8 @@ def mark_purchased(i_id):
 
 @app.route('/reset_purchase/<i_id>')
 def reset_purchase(i_id):
-    if session.get('role') not in ['Admin', 'SuperAdmin']: 
-        flash("Unauthorized: Only Admins can reset purchase status.", "danger")
+    if not session.get('permissions', {}).get('indent', {}).get('approve'): 
+        flash("Unauthorized.", "danger")
         return redirect(url_for('dashboard'))
         
     db.collection('indents').document(i_id).update({
@@ -993,7 +1132,7 @@ def reset_purchase(i_id):
 
 @app.route('/bulk_update', methods=['POST'])
 def bulk_update():
-    if session['role'] not in ['Admin', 'SuperAdmin']: return redirect(url_for('dashboard'))
+    if not session.get('permissions', {}).get('indent', {}).get('approve'): return redirect(url_for('dashboard'))
     ids = request.form.getlist('selected_ids[]')
     action = request.form.get('action')
     if not ids: return redirect(url_for('dashboard'))
@@ -1005,7 +1144,6 @@ def bulk_update():
             batch.update(doc_ref, {'received_status': 'Received', 'received_date': r_date})
         else:
             update_dict = {'approval_status': action}
-            
             if action in ['Approved', 'Hold', 'Rejected']:
                 update_dict['approved_by_name'] = request.form.get('approver_name')
             else: 
@@ -1017,16 +1155,6 @@ def bulk_update():
                 
             batch.update(doc_ref, update_dict)
     batch.commit()
-    return redirect(url_for('dashboard'))
-
-@app.route('/mark_received/<i_id>', methods=['POST'])
-def mark_received(i_id):
-    doc_ref = db.collection('indents').document(i_id)
-    doc = doc_ref.get().to_dict()
-    if session['role'] in ['Admin', 'SuperAdmin'] or (session['role'] == 'Viewer' and doc.get('assigned_to') == session['user_name']):
-        r_date = request.form.get('received_date')
-        if not r_date: r_date = datetime.today().strftime('%Y-%m-%d')
-        doc_ref.update({'received_status': 'Received', 'received_date': r_date})
     return redirect(url_for('dashboard'))
 
 @app.route('/reports', methods=['GET', 'POST'])
@@ -1077,6 +1205,7 @@ def reports():
 @app.route('/payments')
 def payment_dashboard():
     if 'user_id' not in session: return redirect(url_for('login'))
+    if not session.get('permissions', {}).get('payment', {}).get('view', True): return redirect(url_for('dashboard'))
     active_fy = session.get('active_fy')
     payments = []
     
@@ -1097,7 +1226,7 @@ def payment_dashboard():
 
 @app.route('/payments/create', methods=['GET', 'POST'])
 def create_payment():
-    if session['role'] == 'Viewer': return redirect(url_for('payment_dashboard'))
+    if not session.get('permissions', {}).get('payment', {}).get('create'): return redirect(url_for('payment_dashboard'))
     active_fy = session.get('active_fy')
     
     if request.method == 'POST':
@@ -1154,7 +1283,7 @@ def create_payment():
 
 @app.route('/payments/edit/<p_id>', methods=['GET', 'POST'])
 def edit_payment(p_id):
-    if session['role'] == 'Viewer': return redirect(url_for('payment_dashboard'))
+    if not session.get('permissions', {}).get('payment', {}).get('edit'): return redirect(url_for('payment_dashboard'))
     doc_ref = db.collection('payments').document(p_id)
     data = doc_ref.get().to_dict()
     doc_fy = data.get('fy') or get_fy_string(data.get('created_at') or datetime.now())
@@ -1188,7 +1317,7 @@ def edit_payment(p_id):
 
 @app.route('/payments/delete/<p_id>')
 def delete_payment(p_id):
-    if session['role'] not in ['Admin', 'SuperAdmin', 'Editor']: return redirect(url_for('payment_dashboard'))
+    if not session.get('permissions', {}).get('payment', {}).get('delete'): return redirect(url_for('payment_dashboard'))
     doc = db.collection('payments').document(p_id).get().to_dict()
     doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
     
@@ -1251,66 +1380,308 @@ def payment_reports():
                 
     return render_template_string(HTML_REPORTS_PAYMENT, session=session, payments=results, filters=filters, current_time=datetime.now().strftime("%Y-%m-%d"), system='payment')
 
+# --- GATE PASS ROUTES ---
+@app.route('/gatepass')
+def gatepass_dashboard():
+    if 'user_id' not in session: return redirect(url_for('login'))
+    if not session.get('permissions', {}).get('gatepass', {}).get('view', True): return redirect(url_for('dashboard'))
+    active_fy = session.get('active_fy')
+    search_query = request.args.get('search', '').strip().lower()
+    
+    gatepasses = []
+    docs = db.collection('gatepasses').where('fy', '==', active_fy).stream()
+    
+    for doc in docs:
+        gp = doc.to_dict()
+        gp['id'] = doc.id
+        try: gp['serial_no'] = int(gp.get('serial_no', 0))
+        except: gp['serial_no'] = 0
+        
+        if search_query:
+            comb = f"{gp.get('company_name','')} {gp.get('product','')} {gp.get('by_hand_person','')} {gp.get('purpose','')} {gp.get('reason','')} {gp.get('remark','')}".lower()
+            if search_query not in comb:
+                continue
+                
+        gatepasses.append(gp)
+        
+    gatepasses.sort(key=lambda x: x.get('serial_no', 0), reverse=True)
+    return render_template_string(HTML_DASHBOARD_GATEPASS, gatepasses=gatepasses, session=session, system='gatepass')
+
+@app.route('/gatepass/create', methods=['GET', 'POST'])
+def create_gatepass():
+    if not session.get('permissions', {}).get('gatepass', {}).get('create'): return redirect(url_for('gatepass_dashboard'))
+    active_fy = session.get('active_fy')
+    
+    if request.method == 'POST':
+        out_date_str = request.form['out_date']
+        dt_obj = datetime.strptime(out_date_str, '%Y-%m-%d')
+        if get_fy_string(dt_obj) != active_fy:
+             flash(f"ERROR: The date does not belong to FY {active_fy}.", "danger")
+             return redirect(request.referrer)
+             
+        company_select = request.form.get('company_select')
+        custom_company = request.form.get('custom_company')
+        final_company = custom_company.upper() if company_select == 'Other' and custom_company else company_select
+        add_if_new('companies', final_company)
+             
+        new_serial = get_next_serial_number('gatepasses', active_fy, count=1)
+        data = {
+            'fy': active_fy,
+            'serial_no': new_serial,
+            'created_at': datetime.now(),
+            'created_by': session['user_name'],
+            'type': request.form['gp_type'],
+            'out_date': out_date_str,
+            'company_name': final_company,
+            'product': request.form['product'],
+            'qty': request.form['qty'],
+            'by_hand_person': request.form['by_hand_person'],
+            'purpose': request.form.get('purpose', ''),
+            'reason': request.form.get('reason', ''),
+            'remark': request.form.get('remark', ''),
+            'status': 'Pending',
+            'clear_date': '',
+            'clear_by': ''
+        }
+
+        db.collection('gatepasses').add(data)
+        flash("Gate Pass entry saved.", "success")
+        return redirect(url_for('gatepass_dashboard'))
+        
+    companies = get_companies_list()
+    users = [d.to_dict() for d in db.collection('users').stream()]
+    return render_template_string(HTML_CREATE_GATEPASS, today=datetime.today().strftime('%Y-%m-%d'), session=session, system='gatepass', companies=companies, users=users)
+
+@app.route('/gatepass/edit/<gp_id>', methods=['GET', 'POST'])
+def edit_gatepass(gp_id):
+    if not session.get('permissions', {}).get('gatepass', {}).get('edit'): return redirect(url_for('gatepass_dashboard'))
+    doc_ref = db.collection('gatepasses').document(gp_id)
+    data = doc_ref.get().to_dict()
+    doc_fy = data.get('fy') or get_fy_string(data.get('created_at') or datetime.now())
+    data['fy'] = doc_fy
+    
+    if request.method == 'POST':
+        out_date_str = request.form['out_date']
+        dt_obj = datetime.strptime(out_date_str, '%Y-%m-%d')
+        if get_fy_string(dt_obj) != doc_fy:
+             flash(f"ERROR: Cannot move entry to a different FY. Must stay in {doc_fy}.", "danger")
+             return redirect(request.referrer)
+             
+        company_name = request.form.get('company_name', '').upper()
+        add_if_new('companies', company_name)
+             
+        update_data = {
+            'type': request.form['gp_type'],
+            'out_date': out_date_str,
+            'company_name': company_name,
+            'product': request.form['product'],
+            'qty': request.form['qty'],
+            'by_hand_person': request.form['by_hand_person'],
+            'purpose': request.form.get('purpose', ''),
+            'reason': request.form.get('reason', ''),
+            'remark': request.form.get('remark', ''),
+            'status': request.form['status']
+        }
+        
+        if request.form['status'] == 'Cleared':
+            update_data['clear_date'] = request.form.get('clear_date', datetime.today().strftime('%Y-%m-%d'))
+            update_data['clear_by'] = request.form.get('clear_by', '')
+        else:
+            update_data['clear_date'] = ''
+            update_data['clear_by'] = ''
+            
+        doc_ref.update(update_data)
+        flash("Gate Pass updated successfully.", "success")
+        return redirect(url_for('gatepass_dashboard'))
+        
+    companies = get_companies_list()
+    users = [d.to_dict() for d in db.collection('users').stream()]
+    return render_template_string(HTML_EDIT_GATEPASS, data=data, session=session, system='gatepass', companies=companies, users=users)
+
+@app.route('/gatepass/delete/<gp_id>')
+def delete_gatepass(gp_id):
+    if not session.get('permissions', {}).get('gatepass', {}).get('delete'): return redirect(url_for('gatepass_dashboard'))
+    doc = db.collection('gatepasses').document(gp_id).get().to_dict()
+    doc_fy = doc.get('fy') or get_fy_string(doc.get('created_at') or datetime.now())
+    
+    if delete_last_entry_helper('gatepasses', gp_id, doc_fy): 
+        flash('Last Gate Pass entry deleted successfully.', 'success')
+    else: 
+        flash('Error: Only the last entry of the Financial Year can be deleted.', 'danger')
+    return redirect(url_for('gatepass_dashboard'))
+
+@app.route('/gatepass_reports', methods=['GET', 'POST'])
+def gatepass_reports():
+    if 'user_id' not in session: return redirect(url_for('login'))
+    active_fy = session.get('active_fy')
+    filters = {'start_date': '', 'end_date': '', 'gp_type': 'All', 'status': 'All', 'search_filter': ''}
+    results = []
+    
+    if request.method == 'POST':
+        filters.update({k: request.form.get(k, '') for k in filters})
+        docs = db.collection('gatepasses').where('fy', '==', active_fy).stream()
+        
+        for doc in docs:
+            gp = doc.to_dict()
+            gp['id'] = doc.id
+            try: gp['serial_no'] = int(gp.get('serial_no', 0))
+            except: gp['serial_no'] = 0
+            
+            check_date = gp.get('out_date') or gp.get('created_at').strftime('%Y-%m-%d')
+            if filters['start_date'] and check_date < filters['start_date']: continue
+            if filters['end_date'] and check_date > filters['end_date']: continue
+            if filters['gp_type'] != 'All' and gp.get('type') != filters['gp_type']: continue
+            if filters['status'] != 'All' and gp.get('status') != filters['status']: continue
+            
+            if filters['search_filter']:
+                s_lower = filters['search_filter'].lower()
+                if s_lower not in gp.get('company_name', '').lower() and s_lower not in gp.get('by_hand_person', '').lower():
+                    continue
+                    
+            results.append(gp)
+            
+        results.sort(key=lambda x: x.get('serial_no', 0), reverse=True)
+        
+        if request.form.get('action') == 'export':
+            if not results: flash("No data", "warning")
+            else:
+                export_data = []
+                for r in results:
+                    export_data.append({
+                        'FY': r.get('fy'),
+                        'Serial No': r.get('serial_no'),
+                        'Type': r.get('type'),
+                        'Out Date': r.get('out_date'),
+                        'Company Name': r.get('company_name'),
+                        'Product': r.get('product'),
+                        'Qty': r.get('qty'),
+                        'By Hand Person': r.get('by_hand_person'),
+                        'Purpose': r.get('purpose'),
+                        'Reason': r.get('reason'),
+                        'Remark': r.get('remark'),
+                        'Status': r.get('status'),
+                        'Clear Date': r.get('clear_date', ''),
+                        'Clear By': r.get('clear_by', '')
+                    })
+                df = pd.DataFrame(export_data)
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                output.seek(0)
+                return send_file(output, download_name=f"GatePass_Report_FY_{active_fy}.xlsx", as_attachment=True)
+                
+    return render_template_string(HTML_REPORTS_GATEPASS, session=session, gatepasses=results, filters=filters, current_time=datetime.now().strftime("%Y-%m-%d"), system='gatepass')
+
 # --- SETTINGS, USERS & MAINTENANCE ---
 @app.route('/settings')
 def settings():
-    if session.get('role') not in ['Admin', 'SuperAdmin']: return redirect(url_for('dashboard'))
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): 
+        return redirect(url_for('dashboard'))
     units = [dict(id=d.id, **d.to_dict()) for d in db.collection('units').stream()]
+    companies = [dict(id=d.id, **d.to_dict()) for d in db.collection('companies').stream()]
     users = [dict(id=d.id, **d.to_dict()) for d in db.collection('users').stream()]
     logs = [dict(id=d.id, **d.to_dict()) for d in db.collection('login_logs').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()] if session.get('role') == 'SuperAdmin' else []
-    return render_template_string(HTML_SETTINGS, session=session, units=units, users=users, logs=logs, system='indent')
+    return render_template_string(HTML_SETTINGS, session=session, units=units, companies=companies, users=users, logs=logs, system='indent')
 
 @app.route('/settings/add_fy', methods=['POST'])
 def add_fy():
-    if session.get('role') in ['Admin', 'SuperAdmin']:
-        fy_name = request.form['fy_name'].strip()
-        if not list(db.collection('financial_years').where('name', '==', fy_name).stream()): 
-            db.collection('financial_years').add({'name': fy_name})
-            flash(f"Financial Year {fy_name} Created Successfully", "success")
-        else:
-            flash(f"Financial Year {fy_name} already exists", "warning")
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
+    fy_name = request.form['fy_name'].strip()
+    if not list(db.collection('financial_years').where('name', '==', fy_name).stream()): 
+        db.collection('financial_years').add({'name': fy_name})
+        flash(f"Financial Year {fy_name} Created Successfully", "success")
+    else:
+        flash(f"Financial Year {fy_name} already exists", "warning")
     return redirect(url_for('settings'))
 
 @app.route('/settings/delete_fy/<fy_name>')
 def delete_fy(fy_name):
-    if session.get('role') in ['Admin', 'SuperAdmin']: 
-        docs = db.collection('financial_years').where('name', '==', fy_name).stream()
-        for doc in docs:
-            db.collection('financial_years').document(doc.id).delete()
-        flash(f"Financial Year {fy_name} removed from list.", "info")
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
+    docs = db.collection('financial_years').where('name', '==', fy_name).stream()
+    for doc in docs:
+        db.collection('financial_years').document(doc.id).delete()
+    flash(f"Financial Year {fy_name} removed from list.", "info")
     return redirect(url_for('settings'))
 
 @app.route('/settings/add_unit', methods=['POST'])
 def add_unit():
-    if session.get('role') in ['Admin', 'SuperAdmin']:
-        unit_name = request.form['unit_name'].upper()
-        if not list(db.collection('units').where('name', '==', unit_name).stream()): db.collection('units').add({'name': unit_name})
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
+    unit_name = request.form['unit_name'].upper()
+    if not list(db.collection('units').where('name', '==', unit_name).stream()): db.collection('units').add({'name': unit_name})
     return redirect(url_for('settings'))
 
 @app.route('/settings/delete_unit/<uid>')
 def delete_unit(uid):
-    if session.get('role') in ['Admin', 'SuperAdmin']: db.collection('units').document(uid).delete()
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
+    db.collection('units').document(uid).delete()
+    return redirect(url_for('settings'))
+
+@app.route('/settings/add_company', methods=['POST'])
+def add_company():
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
+    company_name = request.form['company_name'].upper()
+    if not list(db.collection('companies').where('name', '==', company_name).stream()): db.collection('companies').add({'name': company_name})
+    return redirect(url_for('settings'))
+
+@app.route('/settings/delete_company/<cid>')
+def delete_company(cid):
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
+    db.collection('companies').document(cid).delete()
     return redirect(url_for('settings'))
 
 @app.route('/users/edit/<uid>', methods=['GET', 'POST'])
 def edit_user(uid):
-    if session['role'] not in ['Admin', 'SuperAdmin']: return redirect(url_for('dashboard'))
+    if session.get('role') not in ['Admin', 'SuperAdmin']: 
+        return redirect(url_for('dashboard'))
+        
     user_data = None if uid == 'new' else db.collection('users').document(uid).get().to_dict()
+    
+    # Prevent Admins from editing SuperAdmin users
+    if session['role'] == 'Admin' and user_data and user_data.get('role') == 'SuperAdmin':
+        flash("Admins cannot edit SuperAdmin profiles.", "danger")
+        return redirect(url_for('settings'))
+    
+    current_role = user_data.get('role', 'Viewer') if user_data else 'Viewer'
+    p_dict = user_data.get('permissions') if user_data and 'permissions' in user_data else get_default_permissions(current_role)
+
     if request.method == 'POST':
-        data = {'name': request.form['name'], 'username': request.form['username'], 'role': request.form['role']}
+        # Ensure Admin cannot create a new SuperAdmin
+        submitted_role = request.form['role']
+        if session['role'] == 'Admin' and submitted_role == 'SuperAdmin':
+            submitted_role = 'Admin' 
+            
+        data = {'name': request.form['name'], 'username': request.form['username'], 'role': submitted_role}
         pwd = request.form.get('password')
+        
+        permissions = {'settings': {'view': 'perm_settings_view' in request.form}}
+        for mod in ['indent', 'payment', 'gatepass']:
+            permissions[mod] = {
+                'view': f'perm_{mod}_view' in request.form,
+                'create': f'perm_{mod}_create' in request.form,
+                'edit': f'perm_{mod}_edit' in request.form,
+                'delete': f'perm_{mod}_delete' in request.form,
+                'approve': f'perm_{mod}_approve' in request.form
+            }
+        data['permissions'] = permissions
+
         if uid == 'new':
             data['password'] = pwd
             db.collection('users').add(data)
         else:
-            if session['role'] == 'SuperAdmin' and pwd: data['password'] = pwd
+            if session['role'] == 'SuperAdmin' and pwd: 
+                data['password'] = pwd
+            # Admin can change password of lower roles
+            if session['role'] == 'Admin' and pwd and current_role != 'SuperAdmin':
+                data['password'] = pwd
+                
             db.collection('users').document(uid).update(data)
         return redirect(url_for('settings'))
-    return render_template_string(HTML_EDIT_USER, uid=uid, user=user_data, session=session, system='indent')
+        
+    return render_template_string(HTML_EDIT_USER, uid=uid, user=user_data, p_dict=p_dict, session=session, system='indent')
 
 @app.route('/users/delete/<uid>')
 def delete_user(uid):
-    if session['role'] not in ['Admin', 'SuperAdmin']: return redirect(url_for('settings'))
+    if session.get('role') not in ['Admin', 'SuperAdmin']: return redirect(url_for('settings'))
     target_user_ref = db.collection('users').document(uid)
     target_user = target_user_ref.get().to_dict()
     if session['role'] == 'Admin' and target_user.get('role') == 'SuperAdmin':
@@ -1341,6 +1712,8 @@ def fix_serials():
             d['id'] = doc.id
             if collection_name == 'indents':
                 sort_date_str = str(d.get('indent_date', ''))
+            elif collection_name == 'gatepasses':
+                sort_date_str = str(d.get('out_date', ''))
             else:
                 sort_date_str = str(d.get('bill_date', d.get('payment_date', '')))
             
@@ -1395,7 +1768,7 @@ def fix_serials():
 @app.route('/settings/backup')
 def backup_database():
     if session.get('role') != 'SuperAdmin': return "Unauthorized", 403
-    collections = ['users', 'units', 'departments', 'financial_years', 'indent_persons', 'indents', 'payments', 'counters', 'login_logs']
+    collections = ['users', 'units', 'departments', 'financial_years', 'indent_persons', 'indents', 'payments', 'gatepasses', 'counters', 'login_logs', 'companies']
     backup_data = {}
     
     for coll in collections:
