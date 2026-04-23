@@ -190,7 +190,6 @@ def add_if_new(collection, name):
 # ==========================================
 # 3. HTML TEMPLATES 
 # ==========================================
-
 HTML_BASE_HEAD = """
 <head>
     <meta charset="UTF-8">
@@ -226,13 +225,38 @@ HTML_BASE_HEAD = """
                 }
             }
         }
+        
+        // NEW SECURE IMAGE VIEWER
         function viewImage(dataUri) {
-            var w = window.open('');
-            w.document.write('<html><body style="margin:0;display:flex;justify-content:center;align-items:center;background:#f8f9fa;height:100vh;"><img src="' + dataUri + '" style="max-width:90%;max-height:90%;border: 5px solid #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.2); border-radius: 8px;"/></body></html>');
-            w.document.close();
+            // 1. Remove old modal if it exists
+            var existingModal = document.getElementById('dynamicImageModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+            
+            // 2. Generate Bootstrap Modal HTML dynamically
+            var modalHtml = `
+            <div class="modal fade" id="dynamicImageModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-lg modal-dialog-centered">
+                <div class="modal-content border-0 shadow-lg">
+                  <div class="modal-header bg-dark text-white border-0 py-2">
+                    <h6 class="modal-title mb-0"><i class="bi bi-image me-2"></i>Image Viewer</h6>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                  </div>
+                  <div class="modal-body text-center bg-light p-3">
+                    <img src="${dataUri}" class="img-fluid rounded" style="max-height: 75vh;">
+                  </div>
+                </div>
+              </div>
+            </div>`;
+            
+            // 3. Inject into the page and show it
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            var myModal = new bootstrap.Modal(document.getElementById('dynamicImageModal'));
+            myModal.show();
         }
     </script>
-    </head>
+</head>
 """
 
 HTML_NAV = """
