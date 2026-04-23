@@ -76,11 +76,9 @@ app.jinja_env.filters['date_fmt'] = format_date_custom
 app.jinja_env.filters['datetime_fmt'] = format_datetime_custom
 app.jinja_env.filters['fy_fmt'] = get_fy_string
 
-# --- PERMISSIONS ENGINE (BACKWARD COMPATIBLE) ---
 def get_default_permissions(role):
-    """Generates default permissions if a user does not have a custom matrix set yet."""
     p = {
-        'indent': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
+        'indent': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False, 'mark_received': False, 'mark_purchased': False},
         'payment': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
         'gatepass': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
         'settings': {'view': False}
@@ -88,13 +86,19 @@ def get_default_permissions(role):
     if role in ['SuperAdmin', 'Admin']:
         for m in ['indent', 'payment', 'gatepass']:
             p[m] = {'view': True, 'create': True, 'edit': True, 'delete': True, 'approve': True}
+        p['indent']['mark_received'] = True
+        p['indent']['mark_purchased'] = True
         p['settings']['view'] = True
     elif role == 'Editor':
         for m in ['indent', 'payment', 'gatepass']:
             p[m] = {'view': True, 'create': True, 'edit': True, 'delete': False, 'approve': False}
+        p['indent']['mark_received'] = True
+        p['indent']['mark_purchased'] = False
     elif role == 'Viewer':
         for m in ['indent', 'payment', 'gatepass']:
             p[m] = {'view': True, 'create': False, 'edit': False, 'delete': False, 'approve': False}
+        p['indent']['mark_received'] = True
+        p['indent']['mark_purchased'] = False
     return p
 
 def initialize_defaults():
@@ -215,8 +219,9 @@ HTML_BASE_HEAD = """
     <script>
         function validateFileSize(input) {
             if (input.files && input.files[0]) {
+                var fileSizeKB = Math.round(input.files[0].size / 1024);
                 if (input.files[0].size > 204800) { 
-                    alert("Image size exceeds 200 KB. Please choose a smaller file.");
+                    alert("❌ ERROR: Image size is " + fileSizeKB + " KB.\\n\\nMaximum allowed size is 200 KB. Please reduce the image size before uploading.");
                     input.value = "";
                 }
             }
@@ -348,7 +353,7 @@ HTML_DASHBOARD_INDENT = """
             <form method="GET" class="d-flex me-2">
                 <input type="hidden" name="status" value="{{ current_status }}">
                 <div class="input-group" style="width: 250px;">
-                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item, User, Dept..." value="{{ request.args.get('search', '') }}">
+                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item, Created By, Dept..." value="{{ request.args.get('search', '') }}">
                     <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>
                     {% if request.args.get('search') or current_status == 'Pending' %}
                     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
@@ -366,10 +371,11 @@ HTML_DASHBOARD_INDENT = """
     {% endwith %}
     <div class="card shadow">
         <div class="card-body p-0">
-            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
+            {% if session.get('permissions', {}).get('indent', {}).get('approve') or session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
             <form id="bulkForm" method="POST" action="{{ url_for('bulk_update') }}">
                 <div class="p-3 bg-light border-bottom no-print">
                     <div class="row g-2 align-items-end">
+                        {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
                         <div class="col-md-6 border-end pe-3">
                             <label class="small text-muted fw-bold text-uppercase mb-1">Approval Action</label>
                             <div class="input-group">
@@ -377,11 +383,18 @@ HTML_DASHBOARD_INDENT = """
                                 <select name="approver_name" class="form-select border-start-0 ps-0">
                                     {% for u in users %}<option value="{{ u.name }}" {% if u.name == session['user_name'] %}selected{% endif %}>{{ u.name }}</option>{% endfor %}
                                 </select>
-                                <button type="submit" name="action" value="Approved" class="btn btn-success">Approve</button>
-                                <button type="submit" name="action" value="Hold" class="btn btn-secondary text-white">Hold</button>
-                                <button type="submit" name="action" value="Rejected" class="btn btn-danger">Reject</button>
+                                {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
+                                    <button type="submit" name="action" value="Approved" class="btn btn-success">Approve</button>
+                                {% endif %}
+                                {% if session['role'] == 'SuperAdmin' %}
+                                    <button type="submit" name="action" value="Hold" class="btn btn-secondary text-white">Hold</button>
+                                    <button type="submit" name="action" value="Rejected" class="btn btn-danger">Reject</button>
+                                {% endif %}
                             </div>
                         </div>
+                        {% endif %}
+                        
+                        {% if session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
                         <div class="col-md-6 ps-3">
                             <label class="small text-muted fw-bold text-uppercase mb-1">Mark Received</label>
                             <div class="input-group">
@@ -389,6 +402,7 @@ HTML_DASHBOARD_INDENT = """
                                 <button type="submit" name="action" value="Received" class="btn btn-dark">Mark Selected Received</button>
                             </div>
                         </div>
+                        {% endif %}
                     </div>
                 </div>
             {% endif %}
@@ -397,7 +411,9 @@ HTML_DASHBOARD_INDENT = """
                 <table class="table table-hover align-middle mb-0">
                     <thead>
                         <tr>
-                            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}<th class="no-print text-center" style="width: 40px;"><input type="checkbox" onclick="toggleAll(this)"></th>{% endif %}
+                            {% if session.get('permissions', {}).get('indent', {}).get('approve') or session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
+                                <th class="no-print text-center" style="width: 40px;"><input type="checkbox" onclick="toggleAll(this)"></th>
+                            {% endif %}
                             <th>S.No</th>
                             <th>Date / Created By</th>
                             <th>Image</th>
@@ -414,7 +430,7 @@ HTML_DASHBOARD_INDENT = """
                     <tbody>
                         {% for indent in indents %}
                         <tr class="{% if indent.received_status == 'Received' %}status-received{% endif %}">
-                            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
+                            {% if session.get('permissions', {}).get('indent', {}).get('approve') or session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
                             <td class="no-print text-center"><input type="checkbox" name="selected_ids[]" value="{{ indent.id }}" class="row-checkbox" form="bulkForm"></td>
                             {% endif %}
                             <td class="fw-bold text-secondary">{{ indent.fy }}/{{ indent.serial_no }}</td>
@@ -455,7 +471,7 @@ HTML_DASHBOARD_INDENT = """
                                         <a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary border-0" title="Edit"><i class="bi bi-pencil-square"></i></a>
                                     {% endif %}
                                     
-                                    {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
+                                    {% if session.get('permissions', {}).get('indent', {}).get('mark_purchased') or session['role'] == 'SuperAdmin' %}
                                         {% if indent.purchase_status != 'Purchased' %}
                                             <a href="{{ url_for('mark_purchased', i_id=indent.id) }}" class="btn btn-sm btn-outline-success border-0" title="Mark Purchased" onclick="return confirm('Mark as Purchased?');"><i class="bi bi-cart-check"></i></a>
                                         {% else %}
@@ -473,7 +489,7 @@ HTML_DASHBOARD_INDENT = """
                     </tbody>
                 </table>
             </div>
-            {% if session.get('permissions', {}).get('indent', {}).get('approve') %}</form>{% endif %}
+            {% if session.get('permissions', {}).get('indent', {}).get('approve') or session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}</form>{% endif %}
             
             <div class="d-flex justify-content-between align-items-center p-3 bg-light border-top no-print">
                 <div class="small text-muted">Page {{ page }}</div>
@@ -516,7 +532,7 @@ HTML_CREATE_MULTI = """
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Indent Person</label><input type="text" name="indent_person" list="personList" class="form-control" placeholder="Type name..."><datalist id="personList">{% for p in persons %}<option value="{{ p }}">{% endfor %}</datalist></div>
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Assign To</label><select name="assigned_to" class="form-select">{% for user in users %}<option value="{{ user.name }}">{{ user.name }}</option>{% endfor %}</select></div>
                     
-                    {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
+                    {% if session['role'] in ['Admin', 'SuperAdmin'] %}
                     <div class="col-md-12 mt-3 pt-3 border-top">
                         <label class="fw-bold small text-uppercase text-danger d-block">Admin Override: Starting Serial No (Optional)</label>
                         <input type="number" name="manual_serial" class="form-control d-inline-block" style="width: 150px;" placeholder="e.g. 1">
@@ -577,19 +593,33 @@ HTML_EDIT = """
                     <label>Serial Number (Locked)</label>
                     <input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled>
                 </div>
-                {% if session.get('permissions', {}).get('indent', {}).get('approve') %}
+                {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
                 <div class="row mb-3">
                     <div class="col-md-6">
                         <div class="p-3 bg-warning bg-opacity-10 border border-warning rounded">
                             <label class="fw-bold">Approval Status</label>
+                            {% if session['role'] == 'SuperAdmin' %}
                             <select name="approval_status" class="form-select" onchange="syncStatus()">
                                 <option value="Pending" {% if data.approval_status == 'Pending' %}selected{% endif %}>Pending</option>
                                 <option value="Approved" {% if data.approval_status == 'Approved' %}selected{% endif %}>Approved</option>
                                 <option value="Hold" {% if data.approval_status == 'Hold' %}selected{% endif %}>Hold</option>
                                 <option value="Rejected" {% if data.approval_status == 'Rejected' %}selected{% endif %}>Rejected</option>
                             </select>
+                            {% else %}
+                                {% if data.approval_status == 'Pending' %}
+                                <select name="approval_status" class="form-select" onchange="syncStatus()">
+                                    <option value="Pending" selected>Pending</option>
+                                    <option value="Approved">Approved</option>
+                                </select>
+                                {% else %}
+                                <input type="text" class="form-control fw-bold" value="{{ data.approval_status }}" disabled>
+                                <input type="hidden" name="approval_status" value="{{ data.approval_status }}">
+                                {% endif %}
+                            {% endif %}
                         </div>
                     </div>
+                    
+                    {% if session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
                     <div class="col-md-6">
                         <div class="p-3 bg-info bg-opacity-10 border border-info rounded">
                             <label class="fw-bold">Received Status</label>
@@ -601,6 +631,7 @@ HTML_EDIT = """
                             <input type="date" name="received_date" id="recDate" class="form-control mt-2 {% if data.received_status != 'Received' %}d-none{% endif %}" value="{{ data.received_date }}">
                         </div>
                     </div>
+                    {% endif %}
                 </div>
                 {% endif %}
                 
@@ -644,9 +675,11 @@ HTML_EDIT = """
 <script>
     function toggleRecDate(){ var s = document.getElementById("recStatus").value; var d = document.getElementById("recDate"); if(s === "Received") d.classList.remove("d-none"); else d.classList.add("d-none"); }
     function syncStatus(){
-        var appStat = document.querySelector('select[name="approval_status"]').value;
+        var appStatSel = document.querySelector('select[name="approval_status"]');
+        if(!appStatSel) return;
+        var appStat = appStatSel.value;
         var recStat = document.getElementById("recStatus");
-        if(appStat === 'Rejected'){
+        if(appStat === 'Rejected' && recStat){
             recStat.value = 'Rejected';
             toggleRecDate();
         }
@@ -730,7 +763,7 @@ HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bod
 
 HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """
 <div class="container mt-5 mb-5">
-    <div class="card shadow mx-auto" style="max-width: 600px;">
+    <div class="card shadow mx-auto" style="max-width: 650px;">
         <div class="card-header bg-success text-white"><h4>{{ 'Create' if uid == 'new' else 'Modify' }} User</h4></div>
         <div class="card-body">
             <form method="POST">
@@ -766,6 +799,8 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                                     <th>Edit</th>
                                     <th>Delete</th>
                                     <th>Approve</th>
+                                    <th>Receive</th>
+                                    <th>Purchase</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -777,6 +812,12 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                                     <td><input type="checkbox" name="perm_{{mod}}_edit" class="form-check-input" {% if p_dict[mod]['edit'] %}checked{% endif %}></td>
                                     <td><input type="checkbox" name="perm_{{mod}}_delete" class="form-check-input" {% if p_dict[mod]['delete'] %}checked{% endif %}></td>
                                     <td><input type="checkbox" name="perm_{{mod}}_approve" class="form-check-input" {% if p_dict[mod]['approve'] %}checked{% endif %}></td>
+                                    {% if mod == 'indent' %}
+                                        <td><input type="checkbox" name="perm_{{mod}}_mark_received" class="form-check-input border-primary" {% if p_dict[mod].get('mark_received') %}checked{% endif %}></td>
+                                        <td><input type="checkbox" name="perm_{{mod}}_mark_purchased" class="form-check-input border-primary" {% if p_dict[mod].get('mark_purchased') %}checked{% endif %}></td>
+                                    {% else %}
+                                        <td><span class="text-muted">-</span></td><td><span class="text-muted">-</span></td>
+                                    {% endif %}
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -938,6 +979,17 @@ def create():
     active_fy = session.get('active_fy')
     
     if request.method == 'POST':
+        images = request.files.getlist('product_image[]')
+        
+        # STRICT SIZE CHECK BEFORE DB OPERATIONS
+        for file in images:
+            if file and file.filename != '':
+                file.seek(0, os.SEEK_END)
+                if file.tell() > 204800:
+                    flash(f"ERROR: Image '{file.filename}' exceeds the 200 KB limit. Submission cancelled.", "danger")
+                    return redirect(request.referrer)
+                file.seek(0)
+                
         input_date_str = request.form['indent_date']
         dt_obj = datetime.strptime(input_date_str, '%Y-%m-%d')
         
@@ -951,7 +1003,6 @@ def create():
         quantities = request.form.getlist('quantity[]')
         units = request.form.getlist('unit[]')
         custom_units = request.form.getlist('custom_unit[]')
-        images = request.files.getlist('product_image[]')
         
         dept_select = request.form.get('department_select')
         custom_dept = request.form.get('custom_department')
@@ -984,13 +1035,9 @@ def create():
             if i < len(images) and images[i].filename != '':
                 try:
                     file = images[i]
-                    file.seek(0, os.SEEK_END)
-                    if file.tell() <= 204800: 
-                        file.seek(0)
-                        encoded_string = base64.b64encode(file.read()).decode('utf-8')
-                        img_data = f"data:{file.content_type};base64,{encoded_string}"
-                    else:
-                        flash(f"Image for '{items[i]}' skipped. Exceeds 200KB limit.", "warning")
+                    file.seek(0)
+                    encoded_string = base64.b64encode(file.read()).decode('utf-8')
+                    img_data = f"data:{file.content_type};base64,{encoded_string}"
                 except Exception as e:
                     print(f"Image Encoding Failed: {e}")
             
@@ -1055,33 +1102,38 @@ def edit_indent(i_id):
         file = request.files.get('product_image')
         if file and file.filename != '':
             file.seek(0, os.SEEK_END)
-            if file.tell() <= 204800: 
-                file.seek(0)
-                encoded_string = base64.b64encode(file.read()).decode('utf-8')
-                update_data['image_url'] = f"data:{file.content_type};base64,{encoded_string}"
-            else:
-                flash("New image exceeds 200 KB limit. Image was not updated.", "warning")
+            if file.tell() > 204800: 
+                flash("ERROR: Uploaded image exceeds the 200 KB limit. Update cancelled.", "danger")
+                return redirect(request.referrer)
+            file.seek(0)
+            encoded_string = base64.b64encode(file.read()).decode('utf-8')
+            update_data['image_url'] = f"data:{file.content_type};base64,{encoded_string}"
 
-        if session.get('permissions', {}).get('indent', {}).get('approve'):
+        if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin':
              if 'approval_status' in request.form: 
                  new_status = request.form['approval_status']
-                 update_data['approval_status'] = new_status
                  
-                 if new_status in ['Approved', 'Hold', 'Rejected']:
-                     update_data['approved_by_name'] = session['user_name']
+                 if session['role'] != 'SuperAdmin' and new_status in ['Hold', 'Rejected']:
+                     flash("Only SuperAdmin can place items on Hold or Reject.", "danger")
                  else:
-                     update_data['approved_by_name'] = ""
-                 
-                 if new_status == 'Rejected':
-                     update_data['received_status'] = 'Rejected'
-                     update_data['received_date'] = ""
+                     update_data['approval_status'] = new_status
+                     
+                     if new_status in ['Approved', 'Hold', 'Rejected']:
+                         update_data['approved_by_name'] = session['user_name']
+                     else:
+                         update_data['approved_by_name'] = ""
+                     
+                     if new_status == 'Rejected':
+                         update_data['received_status'] = 'Rejected'
+                         update_data['received_date'] = ""
 
              if 'received_status' in request.form and update_data.get('approval_status') != 'Rejected':
-                 update_data['received_status'] = request.form['received_status']
-                 if request.form['received_status'] == 'Received':
-                     update_data['received_date'] = request.form.get('received_date', datetime.today().strftime('%Y-%m-%d'))
-                 else:
-                     update_data['received_date'] = ""
+                 if session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin':
+                     update_data['received_status'] = request.form['received_status']
+                     if request.form['received_status'] == 'Received':
+                         update_data['received_date'] = request.form.get('received_date', datetime.today().strftime('%Y-%m-%d'))
+                     else:
+                         update_data['received_date'] = ""
                      
         doc_ref.update(update_data)
         flash("Indent updated successfully.", "success")
@@ -1107,7 +1159,7 @@ def delete_indent(i_id):
 
 @app.route('/purchase/<i_id>')
 def mark_purchased(i_id):
-    if not session.get('permissions', {}).get('indent', {}).get('approve'): return redirect(url_for('dashboard'))
+    if not session.get('permissions', {}).get('indent', {}).get('mark_purchased'): return redirect(url_for('dashboard'))
     db.collection('indents').document(i_id).update({
         'purchase_status': 'Purchased',
         'purchased_by': session['user_name'],
@@ -1118,7 +1170,7 @@ def mark_purchased(i_id):
 
 @app.route('/reset_purchase/<i_id>')
 def reset_purchase(i_id):
-    if not session.get('permissions', {}).get('indent', {}).get('approve'): 
+    if not session.get('permissions', {}).get('indent', {}).get('mark_purchased'): 
         flash("Unauthorized.", "danger")
         return redirect(url_for('dashboard'))
         
@@ -1132,18 +1184,25 @@ def reset_purchase(i_id):
 
 @app.route('/bulk_update', methods=['POST'])
 def bulk_update():
-    if not session.get('permissions', {}).get('indent', {}).get('approve'): return redirect(url_for('dashboard'))
     ids = request.form.getlist('selected_ids[]')
     action = request.form.get('action')
     if not ids: return redirect(url_for('dashboard'))
     batch = db.batch()
+    
     for i_id in ids:
         doc_ref = db.collection('indents').document(i_id)
         if action == 'Received':
+            if not session.get('permissions', {}).get('indent', {}).get('mark_received'): continue
             r_date = request.form.get('bulk_received_date')
             batch.update(doc_ref, {'received_status': 'Received', 'received_date': r_date})
         else:
+            if action in ['Hold', 'Rejected'] and session.get('role') != 'SuperAdmin':
+                continue
+            if action == 'Approved' and not session.get('permissions', {}).get('indent', {}).get('approve'):
+                continue
+                
             update_dict = {'approval_status': action}
+            
             if action in ['Approved', 'Hold', 'Rejected']:
                 update_dict['approved_by_name'] = request.form.get('approver_name')
             else: 
@@ -1662,6 +1721,10 @@ def edit_user(uid):
                 'delete': f'perm_{mod}_delete' in request.form,
                 'approve': f'perm_{mod}_approve' in request.form
             }
+            if mod == 'indent':
+                permissions[mod]['mark_received'] = 'perm_indent_mark_received' in request.form
+                permissions[mod]['mark_purchased'] = 'perm_indent_mark_purchased' in request.form
+                
         data['permissions'] = permissions
 
         if uid == 'new':
@@ -1681,7 +1744,7 @@ def edit_user(uid):
 
 @app.route('/users/delete/<uid>')
 def delete_user(uid):
-    if session.get('role') not in ['Admin', 'SuperAdmin']: return redirect(url_for('settings'))
+    if session.get('role') not in ['Admin', 'SuperAdmin'] and not session.get('permissions', {}).get('settings', {}).get('view'): return redirect(url_for('dashboard'))
     target_user_ref = db.collection('users').document(uid)
     target_user = target_user_ref.get().to_dict()
     if session['role'] == 'Admin' and target_user.get('role') == 'SuperAdmin':
