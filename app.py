@@ -7,6 +7,7 @@ import io
 import os
 import math
 import json
+import base64
 
 # ==========================================
 # 1. CONFIGURATION
@@ -18,21 +19,25 @@ app.secret_key = 'secure_key_v38_pending_filter_sort'
 app.permanent_session_lifetime = timedelta(minutes=15)
 
 # --- FIREBASE SETUP START ---
-# Fetching the variable from Railway Environment Variables
 firebase_creds_json = os.getenv('FIREBASE_CONFIG')
 
+db = None
 if firebase_creds_json:
     try:
         cred_dict = json.loads(firebase_creds_json)
         cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
+        
+        # FIX: Prevent Vercel from crashing on "warm starts" by checking if already initialized
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+            
+        db = firestore.client()
         print("Firebase successfully initialized!")
     except Exception as e:
         print(f"Error parsing JSON or initializing Firebase: {e}")
 else:
     print("CRITICAL ERROR: FIREBASE_CONFIG environment variable not found!")
 
-db = firestore.client()
 # ==========================================
 # 2. LOGIC & HELPERS
 # ==========================================
@@ -102,6 +107,7 @@ def get_default_permissions(role):
     return p
 
 def initialize_defaults():
+    if not db: return
     if not list(db.collection('users').where('username', '==', 'admin1').stream()):
         db.collection('users').add({'username': 'admin1', 'password': 'super', 'name': 'Super Administrator', 'role': 'SuperAdmin'})
     if not len(list(db.collection('units').limit(1).stream())):
@@ -113,11 +119,12 @@ def initialize_defaults():
     if not list(db.collection('financial_years').where('name', '==', current_fy).limit(1).stream()):
         db.collection('financial_years').add({'name': current_fy})
 
-#initialize_defaults()
+# FIX: Removed global call to prevent Vercel boot timeouts
+# initialize_defaults()
 
 @app.context_processor
 def inject_global_vars():
-    if 'user_id' in session:
+    if 'user_id' in session and db:
         fys = [doc.to_dict()['name'] for doc in db.collection('financial_years').order_by('name', direction=firestore.Query.DESCENDING).stream()]
         return dict(available_fys=fys)
     return dict(available_fys=[])
@@ -169,18 +176,23 @@ def delete_last_entry_helper(collection_name, doc_id, target_fy):
     return False
 
 def get_units_list():
+    if not db: return []
     return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('units').stream()])))
 
 def get_departments_list():
+    if not db: return []
     return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('departments').stream()])))
 
 def get_people_list():
+    if not db: return []
     return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('indent_persons').stream()])))
 
 def get_companies_list():
+    if not db: return []
     return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('companies').stream()])))
 
 def add_if_new(collection, name):
+    if not db: return
     if not name or name.lower() == 'other': return
     name = name.strip().upper()
     existing = list(db.collection(collection).where('name', '==', name).stream())
@@ -865,8 +877,21 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    # FIXED: Run the setup check safely ONLY when someone accesses the login page, instead of globally.
+    try:
+        if db:
+            initialize_defaults()
+    except Exception as e:
+        print("Setup error:", e)
+
     if request.method == 'POST':
         if request.form.get('change_password'): return redirect(url_for('change_password'))
+        
+        # If DB didn't load, prevent login attempt to avoid unhandled crash
+        if not db:
+            flash('Database configuration is missing or broken. Cannot log in.')
+            return render_template_string(HTML_LOGIN)
+            
         users = db.collection('users').where('username', '==', request.form['username']).where('password', '==', request.form['password']).stream()
         user = next(users, None)
         if user:
