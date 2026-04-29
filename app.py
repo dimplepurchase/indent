@@ -190,6 +190,7 @@ def add_if_new(collection, name):
 # ==========================================
 # 3. HTML TEMPLATES 
 # ==========================================
+
 HTML_BASE_HEAD = """
 <head>
     <meta charset="UTF-8">
@@ -226,15 +227,12 @@ HTML_BASE_HEAD = """
             }
         }
         
-        // NEW SECURE IMAGE VIEWER
         function viewImage(dataUri) {
-            // 1. Remove old modal if it exists
             var existingModal = document.getElementById('dynamicImageModal');
             if (existingModal) {
                 existingModal.remove();
             }
             
-            // 2. Generate Bootstrap Modal HTML dynamically
             var modalHtml = `
             <div class="modal fade" id="dynamicImageModal" tabindex="-1" aria-hidden="true">
               <div class="modal-dialog modal-lg modal-dialog-centered">
@@ -250,7 +248,6 @@ HTML_BASE_HEAD = """
               </div>
             </div>`;
             
-            // 3. Inject into the page and show it
             document.body.insertAdjacentHTML('beforeend', modalHtml);
             var myModal = new bootstrap.Modal(document.getElementById('dynamicImageModal'));
             myModal.show();
@@ -445,7 +442,7 @@ HTML_DASHBOARD_INDENT = """
                             <th>Item Details</th>
                             <th>Qty</th>
                             <th>Assigned</th>
-                            <th>Action By</th>
+                            <th>Approved By</th>
                             <th>Status</th>
                             <th>Received</th>
                             <th class="no-print">Actions</th>
@@ -617,8 +614,9 @@ HTML_EDIT = """
                     <label>Serial Number (Locked)</label>
                     <input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled>
                 </div>
-                {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
+                
                 <div class="row mb-3">
+                    {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
                     <div class="col-md-6">
                         <div class="p-3 bg-warning bg-opacity-10 border border-warning rounded">
                             <label class="fw-bold">Approval Status</label>
@@ -642,6 +640,7 @@ HTML_EDIT = """
                             {% endif %}
                         </div>
                     </div>
+                    {% endif %}
                     
                     {% if session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
                     <div class="col-md-6">
@@ -657,7 +656,6 @@ HTML_EDIT = """
                     </div>
                     {% endif %}
                 </div>
-                {% endif %}
                 
                 <div class="row mb-3">
                     <div class="col-md-12 border p-3 bg-light rounded">
@@ -712,7 +710,7 @@ HTML_EDIT = """
 </body></html>
 """
 
-HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Indent Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Department</label><input type="text" name="dept_filter" class="form-control" value="{{ filters.dept_filter }}"></div><div class="col-md-2"><label>Approval</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Approved" {% if filters.status == 'Approved' %}selected{% endif %}>Approved</option><option value="Hold" {% if filters.status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Received</label><select name="received_status" class="form-select"><option value="All">All</option><option value="Received" {% if filters.received_status == 'Received' %}selected{% endif %}>Received</option><option value="Pending" {% if filters.received_status == 'Pending' %}selected{% endif %}>Pending Receipt</option><option value="Rejected" {% if filters.received_status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Assigned To</label><select name="assigned_filter" class="form-select"><option value="All">All</option>{% for u in users %}<option value="{{ u.name }}" {% if filters.assigned_filter == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div><div class="col-md-2"><label>Sort By</label><select name="sort_by" class="form-select"><option value="Date" {% if filters.sort_by == 'Date' %}selected{% endif %}>Date</option><option value="Department" {% if filters.sort_by == 'Department' %}selected{% endif %}>Department</option><option value="Assigned" {% if filters.sort_by == 'Assigned' %}selected{% endif %}>Assigned Person</option></select></div><div class="col-md-10 text-end"><button type="submit" name="action" value="filter" class="btn btn-primary px-4">Filter</button><button type="submit" name="action" value="export" class="btn btn-success px-4">Export Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ indents|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm"><thead class="table-dark"><tr><th>S.No (FY)</th><th>Date</th><th>Dept</th><th>Person</th><th>Item</th><th>Qty</th><th>Remarks</th><th>Assigned</th><th>Action By</th><th>Status</th><th>Received</th><th class="no-print">Actions</th></tr></thead><tbody>{% for indent in indents %}<tr><td>{{ indent.fy }}/{{ indent.serial_no }}</td><td>{{ indent.indent_date | date_fmt }}</td><td>{{ indent.department }}</td><td>{{ indent.indent_person }}</td><td>{{ indent.item }}</td><td>{{ indent.quantity }} {{ indent.unit }}</td><td>{{ indent.remarks }}</td><td>{{ indent.assigned_to }}</td><td>{{ indent.approved_by_name if indent.approved_by_name else '' }}</td><td>{{ indent.approval_status }}</td><td>{% if indent.received_status == 'Received' %}Received ({{ indent.received_date | date_fmt }}){% else %}{{ indent.received_status }}{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('indent', {}).get('edit') %}<a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
+HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Indent Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Department</label><input type="text" name="dept_filter" class="form-control" value="{{ filters.dept_filter }}"></div><div class="col-md-2"><label>Approval</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Approved" {% if filters.status == 'Approved' %}selected{% endif %}>Approved</option><option value="Hold" {% if filters.status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Received</label><select name="received_status" class="form-select"><option value="All">All</option><option value="Received" {% if filters.received_status == 'Received' %}selected{% endif %}>Received</option><option value="Pending" {% if filters.received_status == 'Pending' %}selected{% endif %}>Pending Receipt</option><option value="Rejected" {% if filters.received_status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Assigned To</label><select name="assigned_filter" class="form-select"><option value="All">All</option>{% for u in users %}<option value="{{ u.name }}" {% if filters.assigned_filter == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div><div class="col-md-2"><label>Sort By</label><select name="sort_by" class="form-select"><option value="Date" {% if filters.sort_by == 'Date' %}selected{% endif %}>Date</option><option value="Department" {% if filters.sort_by == 'Department' %}selected{% endif %}>Department</option><option value="Assigned" {% if filters.sort_by == 'Assigned' %}selected{% endif %}>Assigned Person</option></select></div><div class="col-md-10 text-end"><button type="submit" name="action" value="filter" class="btn btn-primary px-4">Filter</button><button type="submit" name="action" value="export" class="btn btn-success px-4">Export Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ indents|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm"><thead class="table-dark"><tr><th>S.No (FY)</th><th>Date</th><th>Dept</th><th>Person</th><th>Item</th><th>Qty</th><th>Remarks</th><th>Assigned</th><th>Approved By</th><th>Status</th><th>Received</th><th class="no-print">Actions</th></tr></thead><tbody>{% for indent in indents %}<tr><td>{{ indent.fy }}/{{ indent.serial_no }}</td><td>{{ indent.indent_date | date_fmt }}</td><td>{{ indent.department }}</td><td>{{ indent.indent_person }}</td><td>{{ indent.item }}</td><td>{{ indent.quantity }} {{ indent.unit }}</td><td>{{ indent.remarks }}</td><td>{{ indent.assigned_to }}</td><td>{{ indent.approved_by_name if indent.approved_by_name else '' }}</td><td>{{ indent.approval_status }}</td><td>{% if indent.received_status == 'Received' %}Received ({{ indent.received_date | date_fmt }}){% else %}{{ indent.received_status }}{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('indent', {}).get('edit') %}<a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 
 # ==========================================
 # PAYMENT TEMPLATES
@@ -1136,16 +1134,18 @@ def edit_indent(i_id):
         if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin':
              if 'approval_status' in request.form: 
                  new_status = request.form['approval_status']
+                 current_status = data.get('approval_status')
                  
                  if session['role'] != 'SuperAdmin' and new_status in ['Hold', 'Rejected']:
                      flash("Only SuperAdmin can place items on Hold or Reject.", "danger")
                  else:
                      update_data['approval_status'] = new_status
                      
-                     if new_status in ['Approved', 'Hold', 'Rejected']:
-                         update_data['approved_by_name'] = session['user_name']
-                     else:
-                         update_data['approved_by_name'] = ""
+                     if new_status != current_status:
+                         if new_status in ['Approved', 'Hold', 'Rejected']:
+                             update_data['approved_by_name'] = session['user_name']
+                         else:
+                             update_data['approved_by_name'] = ""
                      
                      if new_status == 'Rejected':
                          update_data['received_status'] = 'Rejected'
