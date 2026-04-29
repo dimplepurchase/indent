@@ -113,7 +113,7 @@ def initialize_defaults():
     if not list(db.collection('financial_years').where('name', '==', current_fy).limit(1).stream()):
         db.collection('financial_years').add({'name': current_fy})
 
-initialize_defaults()
+#initialize_defaults()
 
 @app.context_processor
 def inject_global_vars():
