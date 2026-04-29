@@ -14,7 +14,7 @@ import base64
 # ==========================================
 app = Flask(__name__)
 app.secret_key = 'secure_key_v38_pending_filter_sort'
-
+app.debug = True
 # --- AUTO LOGOUT CONFIGURATION ---
 app.permanent_session_lifetime = timedelta(minutes=15)
 
