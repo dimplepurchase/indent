@@ -367,6 +367,7 @@ HTML_DASHBOARD_INDENT = """
             <div class="btn-group shadow-sm me-2">
                 <a href="{{ url_for('dashboard', status='All', search=request.args.get('search', '')) }}" class="btn btn-sm {{ 'btn-success' if current_status == 'All' else 'btn-outline-success' }}">All Items</a>
                 <a href="{{ url_for('dashboard', status='Pending', search=request.args.get('search', '')) }}" class="btn btn-sm {{ 'btn-warning' if current_status == 'Pending' else 'btn-outline-warning' }}"><i class="bi bi-clock-history"></i> Pending</a>
+                <a href="{{ url_for('dashboard', status='Hold', search=request.args.get('search', '')) }}" class="btn btn-sm {{ 'btn-secondary' if current_status == 'Hold' else 'btn-outline-secondary' }}"><i class="bi bi-pause-circle"></i> Hold</a>
                 <a href="{{ url_for('dashboard', status='Received', search=request.args.get('search', '')) }}" class="btn btn-sm {{ 'btn-primary' if current_status == 'Received' else 'btn-outline-primary' }}"><i class="bi bi-check-circle"></i> Received</a>
                 <a href="{{ url_for('dashboard', status='Rejected', search=request.args.get('search', '')) }}" class="btn btn-sm {{ 'btn-danger' if current_status == 'Rejected' else 'btn-outline-danger' }}"><i class="bi bi-x-circle"></i> Rejected</a>
             </div>
@@ -377,7 +378,7 @@ HTML_DASHBOARD_INDENT = """
                     <input type="text" name="search" class="form-control form-control-sm" placeholder="Search Item, Created By, Dept..." value="{{ request.args.get('search', '') }}">
                     <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>
                     {% if request.args.get('search') or current_status != 'All' %}
-                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
+                    <a href="{{ url_for('dashboard', status='All') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
                     {% endif %}
                 </div>
             </form>
@@ -397,11 +398,11 @@ HTML_DASHBOARD_INDENT = """
                 <div class="p-3 bg-light border-bottom no-print">
                     <div class="row g-2 align-items-end">
                         {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
-                        <div class="col-md-6 border-end pe-3">
+                        <div class="col-md-5 border-end pe-3">
                             <label class="small text-muted fw-bold text-uppercase mb-1">Approval Action</label>
                             <div class="input-group">
                                 <span class="input-group-text bg-white border-end-0">By:</span>
-                                <select name="approver_name" class="form-select border-start-0 ps-0">
+                                <select name="approver_name" class="form-select border-start-0 ps-0" style="max-width: 120px;">
                                     {% for u in users %}<option value="{{ u.name }}" {% if u.name == session['user_name'] %}selected{% endif %}>{{ u.name }}</option>{% endfor %}
                                 </select>
                                 {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
@@ -416,14 +417,19 @@ HTML_DASHBOARD_INDENT = """
                         {% endif %}
                         
                         {% if session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
-                        <div class="col-md-6 ps-3">
+                        <div class="col-md-4 ps-3 border-end pe-3">
                             <label class="small text-muted fw-bold text-uppercase mb-1">Mark Received</label>
                             <div class="input-group">
                                 <input type="date" name="bulk_received_date" class="form-control" value="{{ today }}">
-                                <button type="submit" name="action" value="Received" class="btn btn-dark">Mark Selected Received</button>
+                                <button type="submit" name="action" value="Received" class="btn btn-dark">Receive</button>
                             </div>
                         </div>
                         {% endif %}
+                        
+                        <div class="col-md-3 ps-3">
+                            <label class="small text-muted fw-bold text-uppercase mb-1">Reason / Remark</label>
+                            <input type="text" name="status_reason" class="form-control" placeholder="Enter reason (optional)">
+                        </div>
                     </div>
                 </div>
             {% endif %}
@@ -484,7 +490,12 @@ HTML_DASHBOARD_INDENT = """
                             <td>
                                 {% if indent.received_status == 'Received' %}<span class="badge bg-primary">Received</span><div class="small-meta">{{ indent.received_date | date_fmt }}</div>
                                 {% elif indent.received_status == 'Rejected' %}<span class="badge bg-danger">Rejected</span>
+                                {% elif indent.received_status == 'Hold' %}<span class="badge bg-secondary">Hold</span>
                                 {% else %}<span class="badge bg-light text-secondary border">Pending</span>{% endif %}
+                                
+                                {% if indent.status_reason %}
+                                    <div class="small-meta text-danger fw-bold mt-1 text-wrap" style="max-width: 150px; font-size: 0.7rem;">Reason: {{ indent.status_reason }}</div>
+                                {% endif %}
                             </td>
                             <td class="no-print">
                                 <div class="btn-group">
@@ -618,7 +629,7 @@ HTML_EDIT = """
                 <div class="row mb-3">
                     {% if session.get('permissions', {}).get('indent', {}).get('approve') or session['role'] == 'SuperAdmin' %}
                     <div class="col-md-6">
-                        <div class="p-3 bg-warning bg-opacity-10 border border-warning rounded">
+                        <div class="p-3 bg-warning bg-opacity-10 border border-warning rounded h-100">
                             <label class="fw-bold">Approval Status</label>
                             {% if session['role'] == 'SuperAdmin' %}
                             <select name="approval_status" class="form-select" onchange="syncStatus()">
@@ -644,17 +655,23 @@ HTML_EDIT = """
                     
                     {% if session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
                     <div class="col-md-6">
-                        <div class="p-3 bg-info bg-opacity-10 border border-info rounded">
+                        <div class="p-3 bg-info bg-opacity-10 border border-info rounded h-100">
                             <label class="fw-bold">Received Status</label>
                             <select name="received_status" class="form-select" id="recStatus" onchange="toggleRecDate()">
                                 <option value="Pending" {% if data.received_status == 'Pending' %}selected{% endif %}>Pending</option>
                                 <option value="Received" {% if data.received_status == 'Received' %}selected{% endif %}>Received</option>
+                                <option value="Hold" {% if data.received_status == 'Hold' %}selected{% endif %}>Hold</option>
                                 <option value="Rejected" {% if data.received_status == 'Rejected' %}selected{% endif %}>Rejected</option>
                             </select>
                             <input type="date" name="received_date" id="recDate" class="form-control mt-2 {% if data.received_status != 'Received' %}d-none{% endif %}" value="{{ data.received_date }}">
                         </div>
                     </div>
                     {% endif %}
+                    
+                    <div class="col-md-12 mt-2">
+                        <label class="fw-bold">Status Reason / Remark</label>
+                        <input type="text" name="status_reason" class="form-control" value="{{ data.status_reason if data.status_reason else '' }}" placeholder="Explain why it's on Hold, Rejected, or partially Received...">
+                    </div>
                 </div>
                 
                 <div class="row mb-3">
@@ -710,7 +727,7 @@ HTML_EDIT = """
 </body></html>
 """
 
-HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Indent Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Department</label><input type="text" name="dept_filter" class="form-control" value="{{ filters.dept_filter }}"></div><div class="col-md-2"><label>Approval</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Approved" {% if filters.status == 'Approved' %}selected{% endif %}>Approved</option><option value="Hold" {% if filters.status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Received</label><select name="received_status" class="form-select"><option value="All">All</option><option value="Received" {% if filters.received_status == 'Received' %}selected{% endif %}>Received</option><option value="Pending" {% if filters.received_status == 'Pending' %}selected{% endif %}>Pending Receipt</option><option value="Rejected" {% if filters.received_status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Assigned To</label><select name="assigned_filter" class="form-select"><option value="All">All</option>{% for u in users %}<option value="{{ u.name }}" {% if filters.assigned_filter == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div><div class="col-md-2"><label>Sort By</label><select name="sort_by" class="form-select"><option value="Date" {% if filters.sort_by == 'Date' %}selected{% endif %}>Date</option><option value="Department" {% if filters.sort_by == 'Department' %}selected{% endif %}>Department</option><option value="Assigned" {% if filters.sort_by == 'Assigned' %}selected{% endif %}>Assigned Person</option></select></div><div class="col-md-10 text-end"><button type="submit" name="action" value="filter" class="btn btn-primary px-4">Filter</button><button type="submit" name="action" value="export" class="btn btn-success px-4">Export Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ indents|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm"><thead class="table-dark"><tr><th>S.No (FY)</th><th>Date</th><th>Dept</th><th>Person</th><th>Item</th><th>Qty</th><th>Remarks</th><th>Assigned</th><th>Approved By</th><th>Status</th><th>Received</th><th class="no-print">Actions</th></tr></thead><tbody>{% for indent in indents %}<tr><td>{{ indent.fy }}/{{ indent.serial_no }}</td><td>{{ indent.indent_date | date_fmt }}</td><td>{{ indent.department }}</td><td>{{ indent.indent_person }}</td><td>{{ indent.item }}</td><td>{{ indent.quantity }} {{ indent.unit }}</td><td>{{ indent.remarks }}</td><td>{{ indent.assigned_to }}</td><td>{{ indent.approved_by_name if indent.approved_by_name else '' }}</td><td>{{ indent.approval_status }}</td><td>{% if indent.received_status == 'Received' %}Received ({{ indent.received_date | date_fmt }}){% else %}{{ indent.received_status }}{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('indent', {}).get('edit') %}<a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
+HTML_REPORTS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Indent Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Department</label><input type="text" name="dept_filter" class="form-control" value="{{ filters.dept_filter }}"></div><div class="col-md-2"><label>Approval</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Approved" {% if filters.status == 'Approved' %}selected{% endif %}>Approved</option><option value="Hold" {% if filters.status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Received</label><select name="received_status" class="form-select"><option value="All">All</option><option value="Received" {% if filters.received_status == 'Received' %}selected{% endif %}>Received</option><option value="Pending" {% if filters.received_status == 'Pending' %}selected{% endif %}>Pending Receipt</option><option value="Hold" {% if filters.received_status == 'Hold' %}selected{% endif %}>Hold</option><option value="Rejected" {% if filters.received_status == 'Rejected' %}selected{% endif %}>Rejected</option></select></div><div class="col-md-2"><label>Assigned To</label><select name="assigned_filter" class="form-select"><option value="All">All</option>{% for u in users %}<option value="{{ u.name }}" {% if filters.assigned_filter == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div><div class="col-md-2"><label>Sort By</label><select name="sort_by" class="form-select"><option value="Date" {% if filters.sort_by == 'Date' %}selected{% endif %}>Date</option><option value="Department" {% if filters.sort_by == 'Department' %}selected{% endif %}>Department</option><option value="Assigned" {% if filters.sort_by == 'Assigned' %}selected{% endif %}>Assigned Person</option></select></div><div class="col-md-10 text-end"><button type="submit" name="action" value="filter" class="btn btn-primary px-4">Filter</button><button type="submit" name="action" value="export" class="btn btn-success px-4">Export Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ indents|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm"><thead class="table-dark"><tr><th>S.No (FY)</th><th>Date</th><th>Dept</th><th>Person</th><th>Item</th><th>Qty</th><th>Remarks</th><th>Assigned</th><th>Approved By</th><th>Status</th><th>Received</th><th class="no-print">Actions</th></tr></thead><tbody>{% for indent in indents %}<tr><td>{{ indent.fy }}/{{ indent.serial_no }}</td><td>{{ indent.indent_date | date_fmt }}</td><td>{{ indent.department }}</td><td>{{ indent.indent_person }}</td><td>{{ indent.item }}</td><td>{{ indent.quantity }} {{ indent.unit }}</td><td>{{ indent.remarks }}</td><td>{{ indent.assigned_to }}</td><td>{{ indent.approved_by_name if indent.approved_by_name else '' }}</td><td>{{ indent.approval_status }}</td><td>{% if indent.received_status == 'Received' %}Received ({{ indent.received_date | date_fmt }}){% else %}{{ indent.received_status }}{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('indent', {}).get('edit') %}<a href="{{ url_for('edit_indent', i_id=indent.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
 
 # ==========================================
 # PAYMENT TEMPLATES
@@ -724,7 +741,7 @@ HTML_REPORTS_PAYMENT = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + 
 # ==========================================
 # GATEPASS TEMPLATES
 # ==========================================
-HTML_DASHBOARD_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Gate Pass System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3><div class="d-flex gap-2 align-items-center"><form method="GET" class="d-flex"><div class="input-group" style="width: 250px;"><input type="text" name="search" class="form-control form-control-sm" placeholder="Search Company, Product, Person..." value="{{ request.args.get('search', '') }}"><button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>{% if request.args.get('search') %}<a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>{% endif %}</div></form>{% if session.get('permissions', {}).get('gatepass', {}).get('create') %}<a href="{{ url_for('create_gatepass') }}" class="btn btn-success">+ New Gate Pass</a>{% endif %}</div></div>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category if category != 'message' else 'info' }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<div class="card shadow"><div class="card-body p-0"><div class="table-responsive"><table class="table table-hover table-bordered align-middle table-sm mb-0"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>OUT DATE</th><th>COMPANY</th><th>PRODUCT / QTY</th><th>CARRIER (BY HAND)</th><th>REASON / REMARK</th><th>STATUS / CLEARED</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for gp in gatepasses %}<tr class="{% if gp.status == 'Cleared' %}status-cleared{% endif %}"><td class="fw-bold">{{ gp.fy }}/{{ gp.serial_no }}</td><td>{% if gp.type == 'RGP' %}<span class="badge bg-warning text-dark">RGP</span>{% else %span class="badge bg-secondary">NRGP</span>{% endif %}</td><td>{{ gp.out_date | date_fmt }}</td><td class="fw-bold">{{ gp.company_name }}</td><td><span class="text-green fw-bold">{{ gp.product }}</span><br><small class="text-muted">Qty: {{ gp.qty }}</small></td><td>{{ gp.by_hand_person }}<br><small class="text-muted fst-italic">{{ gp.purpose }}</small></td><td><small class="d-block text-muted"><strong>Rsn:</strong> {{ gp.reason }}</small><small class="d-block text-muted"><strong>Rmk:</strong> {{ gp.remark }}</small></td><td>{% if gp.status == 'Cleared' %}<span class="badge bg-success">Cleared</span><div class="small-meta">On: {{ gp.clear_date | date_fmt }}</div><div class="small-meta">By: {{ gp.clear_by }}</div>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('gatepass', {}).get('edit') %}<a href="{{ url_for('edit_gatepass', gp_id=gp.id) }}" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session.get('permissions', {}).get('gatepass', {}).get('delete') %}<a href="{{ url_for('delete_gatepass', gp_id=gp.id) }}" class="btn btn-sm btn-outline-danger py-0" onclick="return confirm('Delete Gate Pass?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="9" class="text-center py-4">No Gate Pass records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></div></body></html>"""
+HTML_DASHBOARD_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container-fluid mt-4 px-4"><div class="d-flex justify-content-between align-items-center mb-3 no-print"><h3 class="text-green fw-bold">Gate Pass System <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span></h3><div class="d-flex gap-2 align-items-center"><form method="GET" class="d-flex"><div class="input-group" style="width: 250px;"><input type="text" name="search" class="form-control form-control-sm" placeholder="Search Company, Product, Person..." value="{{ request.args.get('search', '') }}"><button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-search"></i></button>{% if request.args.get('search') %}<a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>{% endif %}</div></form>{% if session.get('permissions', {}).get('gatepass', {}).get('create') %}<a href="{{ url_for('create_gatepass') }}" class="btn btn-success">+ New Gate Pass</a>{% endif %}</div></div>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category if category != 'message' else 'info' }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<div class="card shadow"><div class="card-body p-0"><div class="table-responsive"><table class="table table-hover table-bordered align-middle table-sm mb-0"><thead class="table-light"><tr><th>SR.NO</th><th>TYPE</th><th>OUT DATE</th><th>COMPANY</th><th>PRODUCT / QTY</th><th>CARRIER (BY HAND)</th><th>REASON / REMARK</th><th>STATUS / CLEARED</th><th class="no-print">ACTIONS</th></tr></thead><tbody>{% for gp in gatepasses %}<tr class="{% if gp.status == 'Cleared' %}status-cleared{% endif %}"><td class="fw-bold">{{ gp.fy }}/{{ gp.serial_no }}</td><td>{% if gp.type == 'RGP' %}<span class="badge bg-warning text-dark">RGP</span>{% else %}<span class="badge bg-secondary">NRGP</span>{% endif %}</td><td>{{ gp.out_date | date_fmt }}</td><td class="fw-bold">{{ gp.company_name }}</td><td><span class="text-green fw-bold">{{ gp.product }}</span><br><small class="text-muted">Qty: {{ gp.qty }}</small></td><td>{{ gp.by_hand_person }}<br><small class="text-muted fst-italic">{{ gp.purpose }}</small></td><td><small class="d-block text-muted"><strong>Rsn:</strong> {{ gp.reason }}</small><small class="d-block text-muted"><strong>Rmk:</strong> {{ gp.remark }}</small></td><td>{% if gp.status == 'Cleared' %}<span class="badge bg-success">Cleared</span><div class="small-meta">On: {{ gp.clear_date | date_fmt }}</div><div class="small-meta">By: {{ gp.clear_by }}</div>{% else %}<span class="badge bg-danger">Pending</span>{% endif %}</td><td class="no-print">{% if session.get('permissions', {}).get('gatepass', {}).get('edit') %}<a href="{{ url_for('edit_gatepass', gp_id=gp.id) }}" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-pencil-square"></i></a>{% endif %}{% if session.get('permissions', {}).get('gatepass', {}).get('delete') %}<a href="{{ url_for('delete_gatepass', gp_id=gp.id) }}" class="btn btn-sm btn-outline-danger py-0" onclick="return confirm('Delete Gate Pass?')"><i class="bi bi-trash"></i></a>{% endif %}</td></tr>{% else %}<tr><td colspan="9" class="text-center py-4">No Gate Pass records for FY {{ session.get('active_fy') }}.</td></tr>{% endfor %}</tbody></table></div></div></div></div></body></html>"""
 HTML_CREATE_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 800px;"><div class="card-header d-flex justify-content-between"><h4>New Gate Pass Entry</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Pass Type</label><select name="gp_type" class="form-select" required><option value="RGP">RGP (Returnable)</option><option value="NRGP">NRGP (Non-Returnable)</option></select></div><div class="col-md-4"><label class="fw-bold">Out Date (Pending From)</label><input type="date" name="out_date" class="form-control" value="{{ today }}" required></div><div class="col-md-4"><label class="fw-bold">Company Name</label><select name="company_select" class="form-select" onchange="checkCompany(this)" required><option value="" disabled selected>Select Company</option>{% for c in companies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}<option value="Other">Other (Add New)</option></select><input type="text" name="custom_company" class="form-control mt-2 d-none" placeholder="Enter New Company" id="customCompanyInput"></div></div><div class="row mb-3"><div class="col-md-5"><label class="fw-bold">Product / Item</label><input type="text" name="product" class="form-control" required></div><div class="col-md-3"><label class="fw-bold">Quantity</label><input type="text" name="qty" class="form-control" required></div><div class="col-md-4"><label class="fw-bold">By Hand Person Name</label><select name="by_hand_person" class="form-select" required><option value="" disabled selected>Select Person</option>{% for u in users %}<option value="{{ u.name }}">{{ u.name }}</option>{% endfor %}</select></div></div><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Purpose</label><input type="text" name="purpose" class="form-control"></div><div class="col-md-4"><label class="fw-bold">Reason</label><input type="text" name="reason" class="form-control"></div><div class="col-md-4"><label class="fw-bold">Remark</label><input type="text" name="remark" class="form-control"></div></div><button type="submit" class="btn btn-success w-100">Create Gate Pass</button><a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function checkCompany(selectObj) { var customInput = document.getElementById('customCompanyInput'); if(selectObj.value === 'Other') { customInput.classList.remove('d-none'); customInput.required = true; customInput.focus(); } else { customInput.classList.add('d-none'); customInput.required = false; } }</script></body></html>"""
 HTML_EDIT_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """<div class="container mt-5"><div class="card shadow mx-auto" style="max-width: 800px;"><div class="card-header d-flex justify-content-between"><h4>Edit Gate Pass</h4> <span class="badge bg-light text-success">FY: {{ session.get('active_fy') }}</span></div><div class="card-body">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}<form method="POST"><div class="mb-3"><label>Serial Number (FY)</label><input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled></div><div class="row mb-3 p-3 bg-warning bg-opacity-10 border border-warning rounded"><div class="col-md-4"><label class="fw-bold">Clearance Status</label><select name="status" id="gpStatus" class="form-select" onchange="toggleClear()"><option value="Pending" {% if data.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Cleared" {% if data.status == 'Cleared' %}selected{% endif %}>Cleared</option></select></div><div class="col-md-4"><label class="fw-bold">Clear Date</label><input type="date" name="clear_date" id="clearDate" class="form-control {% if data.status != 'Cleared' %}d-none{% endif %}" value="{{ data.clear_date }}"></div><div class="col-md-4"><label class="fw-bold">Cleared By / Purpose</label><input type="text" name="clear_by" id="clearBy" class="form-control {% if data.status != 'Cleared' %}d-none{% endif %}" value="{{ data.clear_by }}" placeholder="Person who received it back"></div></div><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Pass Type</label><select name="gp_type" class="form-select" required><option value="RGP" {% if data.type == 'RGP' %}selected{% endif %}>RGP</option><option value="NRGP" {% if data.type == 'NRGP' %}selected{% endif %}>NRGP</option></select></div><div class="col-md-4"><label class="fw-bold">Out Date</label><input type="date" name="out_date" class="form-control" value="{{ data.out_date }}" required></div><div class="col-md-4"><label class="fw-bold">Company Name</label><input type="text" name="company_name" class="form-control" value="{{ data.company_name }}" required list="companyList"><datalist id="companyList">{% for c in companies %}<option value="{{ c }}">{% endfor %}</datalist></div></div><div class="row mb-3"><div class="col-md-5"><label class="fw-bold">Product / Item</label><input type="text" name="product" class="form-control" value="{{ data.product }}" required></div><div class="col-md-3"><label class="fw-bold">Quantity</label><input type="text" name="qty" class="form-control" value="{{ data.qty }}" required></div><div class="col-md-4"><label class="fw-bold">By Hand Person Name</label><select name="by_hand_person" class="form-select" required>{% for u in users %}<option value="{{ u.name }}" {% if data.by_hand_person == u.name %}selected{% endif %}>{{ u.name }}</option>{% endfor %}</select></div></div><div class="row mb-3"><div class="col-md-4"><label class="fw-bold">Purpose</label><input type="text" name="purpose" class="form-control" value="{{ data.purpose }}"></div><div class="col-md-4"><label class="fw-bold">Reason</label><input type="text" name="reason" class="form-control" value="{{ data.reason }}"></div><div class="col-md-4"><label class="fw-bold">Remark</label><input type="text" name="remark" class="form-control" value="{{ data.remark }}"></div></div><button type="submit" class="btn btn-success w-100">Update Gate Pass</button><a href="{{ url_for('gatepass_dashboard') }}" class="btn btn-secondary w-100 mt-2">Cancel</a></form></div></div></div><script>function toggleClear(){var s=document.getElementById("gpStatus").value;var d=document.getElementById("clearDate");var b=document.getElementById("clearBy");if(s==="Cleared"){d.classList.remove("d-none");b.classList.remove("d-none");if(!d.value){var today = new Date(); d.value = today.toISOString().split('T')[0];}}else{d.classList.add("d-none");b.classList.add("d-none");}}</script></body></html>"""
 HTML_REPORTS_GATEPASS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body>""" + HTML_NAV + """<div class="container mt-4"><h3 class="mb-4 no-print text-green">Gate Pass Reports (FY {{ session.get('active_fy') }})</h3><div class="card shadow mb-4 no-print"><div class="card-body bg-light"><form method="POST" class="row g-3"><div class="col-md-2"><label>From</label><input type="date" name="start_date" class="form-control" value="{{ filters.start_date }}"></div><div class="col-md-2"><label>To</label><input type="date" name="end_date" class="form-control" value="{{ filters.end_date }}"></div><div class="col-md-2"><label>Type</label><select name="gp_type" class="form-select"><option value="All">All</option><option value="RGP" {% if filters.gp_type == 'RGP' %}selected{% endif %}>RGP</option><option value="NRGP" {% if filters.gp_type == 'NRGP' %}selected{% endif %}>NRGP</option></select></div><div class="col-md-2"><label>Status</label><select name="status" class="form-select"><option value="All">All</option><option value="Pending" {% if filters.status == 'Pending' %}selected{% endif %}>Pending</option><option value="Cleared" {% if filters.status == 'Cleared' %}selected{% endif %}>Cleared</option></select></div><div class="col-md-2"><label>Company / Person</label><input type="text" name="search_filter" class="form-control" placeholder="Search..." value="{{ filters.search_filter }}"></div><div class="col-md-2 d-flex align-items-end gap-2"><button type="submit" name="action" value="filter" class="btn btn-primary w-50">Filter</button><button type="submit" name="action" value="export" class="btn btn-success w-50">Excel</button></div></form></div></div><div class="d-none d-print-block"><h2>Gate Pass Report</h2><p>{{ current_time | date_fmt }}</p></div><div class="card shadow"><div class="card-header bg-white d-flex justify-content-between align-items-center no-print"><h5>Results ({{ gatepasses|length }})</h5><button onclick="window.print()" class="btn btn-dark">Print</button></div><div class="card-body"><table class="table table-bordered table-striped table-sm align-middle"><thead class="table-dark"><tr><th>SR</th><th>TYPE</th><th>OUT DATE</th><th>COMPANY</th><th>PRODUCT / QTY</th><th>CARRIER / PURPOSE</th><th>STATUS</th><th>CLEAR DATE / BY</th></tr></thead><tbody>{% for gp in gatepasses %}<tr><td>{{ gp.fy }}/{{ gp.serial_no }}</td><td>{{ gp.type }}</td><td>{{ gp.out_date | date_fmt }}</td><td>{{ gp.company_name }}</td><td>{{ gp.product }} (Qty: {{ gp.qty }})</td><td>{{ gp.by_hand_person }}<br><small>{{ gp.purpose }}</small></td><td>{{ gp.status }}</td><td>{% if gp.status == 'Cleared' %}{{ gp.clear_date | date_fmt }} ({{ gp.clear_by }}){% else %}-{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div></body></html>"""
@@ -891,7 +908,8 @@ def login():
                 'user_name': ud['name'], 
                 'role': ud['role'],
                 'permissions': perms,
-                'active_fy': current_fy 
+                'active_fy': current_fy,
+                'indent_status_filter': 'All' # Reset filter on login
             })
             db.collection('login_logs').add({'username': ud['username'], 'name': ud['name'], 'role': ud['role'], 'timestamp': datetime.utcnow()})
             return redirect(url_for('dashboard'))
@@ -933,7 +951,13 @@ def dashboard():
         
     page = request.args.get('page', 1, type=int)
     search_query = request.args.get('search', '').strip().lower()
-    status_filter = request.args.get('status', 'All') 
+    
+    if 'status' in request.args:
+        status_filter = request.args.get('status')
+        session['indent_status_filter'] = status_filter
+    else:
+        status_filter = session.get('indent_status_filter', 'All')
+        
     active_fy = session.get('active_fy')
     
     per_page = 40
@@ -952,13 +976,16 @@ def dashboard():
         
         if session['role'] == 'Viewer' and i.get('assigned_to') != session['user_name']: continue
         
+        # New Strict Filter Logic
         if status_filter == 'Pending':
-            if i.get('received_status') in ['Received', 'Rejected'] or i.get('approval_status') == 'Rejected':
+            if i.get('received_status') in ['Received', 'Rejected', 'Hold'] or i.get('approval_status') in ['Rejected', 'Hold']:
                 continue
         elif status_filter == 'Received':
             if i.get('received_status') != 'Received': continue
         elif status_filter == 'Rejected':
             if i.get('approval_status') != 'Rejected' and i.get('received_status') != 'Rejected': continue
+        elif status_filter == 'Hold':
+            if i.get('approval_status') != 'Hold' and i.get('received_status') != 'Hold': continue
         
         try: i['serial_no'] = int(i.get('serial_no', 0))
         except: i['serial_no'] = 0
@@ -972,6 +999,7 @@ def dashboard():
         i.setdefault('purchase_status', '')
         i.setdefault('assigned_to', '')
         i.setdefault('department', '')
+        i.setdefault('status_reason', '')
         
         if search_query:
             combined_text = f"{i.get('item', '')} {i.get('created_by', '')} cr:{i.get('created_by', '')} {i.get('assigned_to', '')} {i.get('indent_person', '')} {i.get('department', '')}".lower()
@@ -1085,7 +1113,8 @@ def create():
                 'purchase_status': '',
                 'received_status': 'Pending', 
                 'created_by': session['user_name'],
-                'created_at': datetime.now()
+                'created_at': datetime.now(),
+                'status_reason': ''
             }
             db.collection('indents').add(data)
             next_sn += 1 
@@ -1123,6 +1152,9 @@ def edit_indent(i_id):
             'quantity': int(request.form['quantity']), 'unit': request.form['unit'], 'assigned_to': request.form['assigned_to']
         }
         
+        if 'status_reason' in request.form:
+            update_data['status_reason'] = request.form['status_reason']
+            
         if request.form.get('delete_image') == '1':
             update_data['image_url'] = ""
 
@@ -1215,15 +1247,19 @@ def reset_purchase(i_id):
 def bulk_update():
     ids = request.form.getlist('selected_ids[]')
     action = request.form.get('action')
+    status_reason = request.form.get('status_reason', '').strip()
+    
     if not ids: return redirect(url_for('dashboard'))
     batch = db.batch()
     
     for i_id in ids:
         doc_ref = db.collection('indents').document(i_id)
+        update_dict = {}
+        
         if action == 'Received':
             if not session.get('permissions', {}).get('indent', {}).get('mark_received'): continue
             r_date = request.form.get('bulk_received_date')
-            batch.update(doc_ref, {'received_status': 'Received', 'received_date': r_date})
+            update_dict = {'received_status': 'Received', 'received_date': r_date}
         else:
             if action in ['Hold', 'Rejected'] and session.get('role') != 'SuperAdmin':
                 continue
@@ -1240,8 +1276,13 @@ def bulk_update():
             if action == 'Rejected':
                 update_dict['received_status'] = 'Rejected'
                 update_dict['received_date'] = ""
-                
+        
+        if status_reason:
+            update_dict['status_reason'] = status_reason
+            
+        if update_dict:
             batch.update(doc_ref, update_dict)
+            
     batch.commit()
     return redirect(url_for('dashboard'))
 
@@ -1272,9 +1313,8 @@ def reports():
             if filters['status'] != 'All' and d['approval_status'] != filters['status']: continue
             if filters['dept_filter'] and filters['dept_filter'].lower() not in d['department'].lower(): continue
             if filters['assigned_filter'] != 'All' and d.get('assigned_to') != filters['assigned_filter']: continue
-            if filters['received_status'] == 'Received' and d.get('received_status') != 'Received': continue
-            if filters['received_status'] == 'Pending' and d.get('received_status') == 'Received': continue
-            if filters['received_status'] == 'Rejected' and d.get('received_status') != 'Rejected': continue
+            if filters['received_status'] != 'All' and d.get('received_status') != filters['received_status']: continue
+            
             results.append(d)
         if filters['sort_by'] == 'Department': results.sort(key=lambda x: x['department'])
         elif filters['sort_by'] == 'Assigned': results.sort(key=lambda x: x['assigned_to'])
@@ -1282,7 +1322,7 @@ def reports():
         if request.form.get('action') == 'export':
             if not results: flash("No data", "warning")
             else:
-                df = pd.DataFrame(results)[['fy', 'serial_no', 'indent_date', 'department', 'indent_person', 'item', 'quantity', 'unit', 'approval_status', 'approved_by_name', 'received_status', 'assigned_to', 'reason', 'remarks']]
+                df = pd.DataFrame(results)[['fy', 'serial_no', 'indent_date', 'department', 'indent_person', 'item', 'quantity', 'unit', 'approval_status', 'approved_by_name', 'received_status', 'assigned_to', 'reason', 'remarks', 'status_reason']]
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False)
                 output.seek(0)
@@ -1724,6 +1764,7 @@ def edit_user(uid):
         
     user_data = None if uid == 'new' else db.collection('users').document(uid).get().to_dict()
     
+    # Prevent Admins from editing SuperAdmin users
     if session['role'] == 'Admin' and user_data and user_data.get('role') == 'SuperAdmin':
         flash("Admins cannot edit SuperAdmin profiles.", "danger")
         return redirect(url_for('settings'))
@@ -1732,6 +1773,7 @@ def edit_user(uid):
     p_dict = user_data.get('permissions') if user_data and 'permissions' in user_data else get_default_permissions(current_role)
 
     if request.method == 'POST':
+        # Ensure Admin cannot create a new SuperAdmin
         submitted_role = request.form['role']
         if session['role'] == 'Admin' and submitted_role == 'SuperAdmin':
             submitted_role = 'Admin' 
@@ -1760,6 +1802,7 @@ def edit_user(uid):
         else:
             if session['role'] == 'SuperAdmin' and pwd: 
                 data['password'] = pwd
+            # Admin can change password of lower roles
             if session['role'] == 'Admin' and pwd and current_role != 'SuperAdmin':
                 data['password'] = pwd
                 
