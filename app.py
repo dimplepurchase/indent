@@ -33,6 +33,7 @@ else:
     print("CRITICAL ERROR: FIREBASE_CONFIG environment variable not found!")
 
 db = firestore.client()
+  
 # ==========================================
 # 2. LOGIC & HELPERS
 # ==========================================
@@ -81,7 +82,8 @@ def get_default_permissions(role):
         'indent': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False, 'mark_received': False, 'mark_purchased': False},
         'payment': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
         'gatepass': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
-        'settings': {'view': False}
+        'settings': {'view': False},
+        'messages': {'send': False}
     }
     if role in ['SuperAdmin', 'Admin']:
         for m in ['indent', 'payment', 'gatepass']:
@@ -89,36 +91,54 @@ def get_default_permissions(role):
         p['indent']['mark_received'] = True
         p['indent']['mark_purchased'] = True
         p['settings']['view'] = True
+        p['messages']['send'] = True
     elif role == 'Editor':
         for m in ['indent', 'payment', 'gatepass']:
             p[m] = {'view': True, 'create': True, 'edit': True, 'delete': False, 'approve': False}
         p['indent']['mark_received'] = True
-        p['indent']['mark_purchased'] = False
     elif role == 'Viewer':
         for m in ['indent', 'payment', 'gatepass']:
             p[m] = {'view': True, 'create': False, 'edit': False, 'delete': False, 'approve': False}
         p['indent']['mark_received'] = True
-        p['indent']['mark_purchased'] = False
     return p
 
-def initialize_defaults():
-    if not list(db.collection('users').where('username', '==', 'admin1').stream()):
-        db.collection('users').add({'username': 'admin1', 'password': 'super', 'name': 'Super Administrator', 'role': 'SuperAdmin'})
-    if not len(list(db.collection('units').limit(1).stream())):
-        for u in ['KG', 'LTR', 'PCS', 'MTR', 'BOX']: db.collection('units').add({'name': u})
-    if not len(list(db.collection('departments').limit(1).stream())):
-        for d in ['HR', 'IT', 'ELECTRICAL', 'CTP', 'STORE']: db.collection('departments').add({'name': d})
-    
-    current_fy = get_fy_string(datetime.now())
-    if not list(db.collection('financial_years').where('name', '==', current_fy).limit(1).stream()):
-        db.collection('financial_years').add({'name': current_fy})
+# --- CUSTOM LOGOUT TIME VERIFIER ---
+@app.before_request
+def check_session_timeout():
+    if request.endpoint in ['login', 'static'] or not request.endpoint:
+        return
+    if 'user_id' in session:
+        last_active = session.get('last_active')
+        timeout_minutes = session.get('timeout_minutes', 15)
+        now = datetime.now().timestamp()
+        
+        if last_active and (now - last_active) > (timeout_minutes * 60):
+            session.clear()
+            flash("Session expired due to inactivity. Please log in again.", "warning")
+            return redirect(url_for('login'))
+        
+        session['last_active'] = now
 
 @app.context_processor
 def inject_global_vars():
-    if 'user_id' in session:
-        fys = [doc.to_dict()['name'] for doc in db.collection('financial_years').order_by('name', direction=firestore.Query.DESCENDING).stream()]
-        return dict(available_fys=fys)
-    return dict(available_fys=[])
+    unread_msgs = 0
+    all_users = []
+    if 'user_name' in session:
+        try:
+            # FIXED FIREBASE INDEX ERROR: Fetched without order_by, done in Python instead.
+            msgs = db.collection('system_messages').where('receiver', 'in', [session['user_name'], 'All']).stream()
+            for m in msgs:
+                if session['user_name'] not in m.to_dict().get('read_by', []):
+                    unread_msgs += 1
+        except Exception as e: 
+            print(f"Message Count Error: {e}")
+            
+        try:
+            fys = [doc.to_dict()['name'] for doc in db.collection('financial_years').order_by('name', direction=firestore.Query.DESCENDING).stream()]
+            all_users = [d.to_dict() for d in db.collection('users').stream()]
+            return dict(available_fys=fys, unread_msgs=unread_msgs, all_users=all_users)
+        except: pass
+    return dict(available_fys=[], unread_msgs=0, all_users=[])
 
 def get_next_serial_number(collection_name, target_fy, count=1):
     counter_id = f"{collection_name}_{target_fy}"
@@ -149,14 +169,11 @@ def get_next_serial_number(collection_name, target_fy, count=1):
 def delete_last_entry_helper(collection_name, doc_id, target_fy):
     counter_ref = db.collection('counters').document(f"{collection_name}_{target_fy}")
     counter_snap = counter_ref.get()
-    
     if not counter_snap.exists: return False
     current_max = counter_snap.get('last_value')
-    
     doc_ref = db.collection(collection_name).document(doc_id)
     doc = doc_ref.get()
     if not doc.exists: return False
-    
     try:
         doc_serial = int(doc.to_dict().get('serial_no', 0))
         if doc_serial == current_max:
@@ -166,23 +183,15 @@ def delete_last_entry_helper(collection_name, doc_id, target_fy):
     except: pass
     return False
 
-def get_units_list():
-    return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('units').stream()])))
-
-def get_departments_list():
-    return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('departments').stream()])))
-
-def get_people_list():
-    return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('indent_persons').stream()])))
-
-def get_companies_list():
-    return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('companies').stream()])))
+def get_units_list(): return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('units').stream()])))
+def get_departments_list(): return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('departments').stream()])))
+def get_people_list(): return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('indent_persons').stream()])))
+def get_companies_list(): return sorted(list(set([doc.to_dict()['name'] for doc in db.collection('companies').stream()])))
 
 def add_if_new(collection, name):
     if not name or name.lower() == 'other': return
     name = name.strip().upper()
-    existing = list(db.collection(collection).where('name', '==', name).stream())
-    if not existing:
+    if not list(db.collection(collection).where('name', '==', name).stream()):
         db.collection(collection).add({'name': name})
 
 # ==========================================
@@ -211,6 +220,8 @@ HTML_BASE_HEAD = """
         .status-cleared { background-color: #e2e3e5 !important; color: #41464b; }
         .text-green { color: var(--primary-green); }
         .small-meta { font-size: 0.75rem; color: #6c757d; line-height: 1.2; display: block; margin-top: 4px; }
+        @keyframes flashRed { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        .urgent-flash { animation: flashRed 2s infinite; }
         @media print { .no-print { display: none !important; } .card { box-shadow: none !important; border: 1px solid #ddd; } body { background-color: white !important; } }
     </style>
     
@@ -227,9 +238,7 @@ HTML_BASE_HEAD = """
         
         function viewImage(dataUri) {
             var existingModal = document.getElementById('dynamicImageModal');
-            if (existingModal) {
-                existingModal.remove();
-            }
+            if (existingModal) existingModal.remove();
             
             var modalHtml = `
             <div class="modal fade" id="dynamicImageModal" tabindex="-1" aria-hidden="true">
@@ -273,6 +282,22 @@ HTML_NAV = """
         </div>
         
         <div class="d-flex align-items-center">
+            
+            {% if session.get('permissions', {}).get('messages', {}).get('send') or session.get('role') == 'SuperAdmin' %}
+            <button class="btn btn-sm btn-outline-info me-3 fw-bold border-0" data-bs-toggle="modal" data-bs-target="#navBroadcastModal">
+                <i class="bi bi-megaphone-fill"></i> Broadcast
+            </button>
+            {% endif %}
+            
+            <a href="{{ url_for('messages_dashboard') }}" class="btn btn-sm btn-outline-light me-4 position-relative border-0" title="Notifications">
+                <i class="bi bi-bell-fill fs-5"></i>
+                {% if unread_msgs > 0 %}
+                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger border border-light">
+                    {{ unread_msgs }}
+                </span>
+                {% endif %}
+            </a>
+        
             <div class="dropdown me-3">
                 <button class="btn btn-sm btn-outline-warning dropdown-toggle fw-bold" type="button" data-bs-toggle="dropdown">
                     FY: {{ session.get('active_fy') }}
@@ -300,6 +325,36 @@ HTML_NAV = """
         </div>
     </div>
 </nav>
+
+{% if session.get('permissions', {}).get('messages', {}).get('send') or session.get('role') == 'SuperAdmin' %}
+<div class="modal fade text-dark" id="navBroadcastModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content shadow-lg border-0">
+      <div class="modal-header bg-primary text-white border-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-send-fill me-2"></i>Send Broadcast Alert</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body bg-light">
+        <form method="POST" action="{{ url_for('send_message') }}">
+            <input type="hidden" name="return_path" value="request.path">
+            <div class="mb-3">
+                <label class="fw-bold small text-muted text-uppercase mb-1">Deliver To:</label>
+                <select name="receiver" class="form-select border-primary" required>
+                    <option value="All" class="fw-bold text-primary">📢 Broadcast to ALL Users</option>
+                    {% for u in all_users %}<option value="{{ u.name }}">{{ u.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="mb-4">
+                <label class="fw-bold small text-muted text-uppercase mb-1">Message Content:</label>
+                <textarea name="message" class="form-control" rows="4" placeholder="Type your message here..." required></textarea>
+            </div>
+            <button type="submit" class="btn btn-success w-100 fw-bold py-2"><i class="bi bi-envelope-paper"></i> Send Now</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 """
 
 HTML_LOGIN = """
@@ -353,12 +408,74 @@ HTML_CHANGE_PASS = """
 """
 
 # ==========================================
+# MESSAGES TEMPLATES
+# ==========================================
+HTML_MESSAGES = """
+<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """
+<body>""" + HTML_NAV + """
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h3 class="text-green fw-bold"><i class="bi bi-bell"></i> Alerts & Messages</h3>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category if category != 'message' else 'info' }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}
+    {% endwith %}
+
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card shadow">
+                <div class="card-header bg-dark text-white fw-bold">Your Notifications Inbox</div>
+                <div class="card-body p-0">
+                    <ul class="list-group list-group-flush">
+                        {% for m in messages %}
+                        <li class="list-group-item p-3 {% if session['user_name'] not in m.read_by %}bg-warning bg-opacity-10 border-start border-warning border-4{% endif %}">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <div class="small text-muted mb-1"><i class="bi bi-clock"></i> {{ m.timestamp | datetime_fmt }} &nbsp;|&nbsp; <i class="bi bi-person"></i> From: <span class="text-primary fw-bold">{{ m.sender }}</span></div>
+                                    <p class="mb-0 fs-6">{{ m.message }}</p>
+                                </div>
+                                {% if session['user_name'] not in m.read_by %}
+                                <div>
+                                    <a href="{{ url_for('read_message', m_id=m.id) }}" class="btn btn-sm btn-success px-3 shadow-sm rounded-pill"><i class="bi bi-check2-all"></i> Mark Read</a>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </li>
+                        {% else %}
+                        <li class="list-group-item text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 text-light"></i><br>
+                            No messages or alerts right now.
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</body></html>
+"""
+
+
+# ==========================================
 # INDENT TEMPLATES
 # ==========================================
 HTML_DASHBOARD_INDENT = """
 <!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """
 <body>""" + HTML_NAV + """
 <div class="container-fluid mt-4 px-4">
+
+    {% if session.get('notifications_enabled', True) and urgent_alerts|length > 0 %}
+    <div class="alert alert-danger shadow border-danger urgent-flash mb-4 d-flex align-items-center justify-content-between">
+        <div>
+            <i class="bi bi-exclamation-triangle-fill fs-4 me-2"></i> 
+            <strong>URGENT ACTION REQUIRED:</strong> You have <span class="badge bg-danger rounded-pill fs-6">{{ urgent_alerts|length }}</span> pending urgent indent(s) assigned to you!
+        </div>
+        <a href="{{ url_for('dashboard', search='cr:'+session['user_name']) }}" class="btn btn-sm btn-outline-danger bg-white fw-bold">View My Items</a>
+    </div>
+    {% endif %}
+
     <div class="d-flex justify-content-between align-items-center mb-4 no-print">
         <h3 class="text-green fw-bold">Indent Dashboard 
             <span class="badge bg-secondary ms-2" style="font-size: 0.5em; vertical-align: middle;">FY {{ session.get('active_fy') }}</span>
@@ -456,7 +573,7 @@ HTML_DASHBOARD_INDENT = """
                     </thead>
                     <tbody>
                         {% for indent in indents %}
-                        <tr class="{% if indent.received_status == 'Received' %}status-received{% endif %}">
+                        <tr class="{% if indent.received_status == 'Received' %}status-received{% elif indent.is_urgent and indent.received_status == 'Pending' %}bg-danger bg-opacity-10{% endif %}">
                             {% if session.get('permissions', {}).get('indent', {}).get('approve') or session.get('permissions', {}).get('indent', {}).get('mark_received') or session['role'] == 'SuperAdmin' %}
                             <td class="no-print text-center"><input type="checkbox" name="selected_ids[]" value="{{ indent.id }}" class="row-checkbox" form="bulkForm"></td>
                             {% endif %}
@@ -469,6 +586,7 @@ HTML_DASHBOARD_INDENT = """
                             </td>
                             <td><span class="d-block fw-500">{{ indent.department }}</span><span class="small text-muted">{{ indent.indent_person }}</span></td>
                             <td>
+                                {% if indent.is_urgent and indent.received_status == 'Pending' %}<span class="badge bg-danger mb-1"><i class="bi bi-fire"></i> URGENT</span><br>{% endif %}
                                 <strong class="text-green">{{ indent.item }}</strong>
                                 <div class="small text-muted fst-italic">{{ indent.reason }}</div>
                                 {% if indent.remarks %}
@@ -494,7 +612,7 @@ HTML_DASHBOARD_INDENT = """
                                 {% else %}<span class="badge bg-light text-secondary border">Pending</span>{% endif %}
                                 
                                 {% if indent.status_reason %}
-                                    <div class="small-meta text-danger fw-bold mt-1 text-wrap" style="max-width: 150px; font-size: 0.7rem;">Reason: {{ indent.status_reason }}</div>
+                                    <div class="small-meta text-danger fw-bold mt-1 text-wrap" style="max-width: 150px; font-size: 0.7rem;">Rsn: {{ indent.status_reason }}</div>
                                 {% endif %}
                             </td>
                             <td class="no-print">
@@ -544,7 +662,7 @@ HTML_DASHBOARD_INDENT = """
 
 HTML_CREATE_MULTI = """
 <!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """
-<div class="container mt-4">
+<div class="container mt-4 mb-5">
     <div class="card shadow border-0">
         <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
             <h4 class="mb-0">Create Indent (FY: {{ session.get('active_fy') }})</h4>
@@ -555,14 +673,21 @@ HTML_CREATE_MULTI = """
               {% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}
             {% endwith %}
             
-            <div class="alert alert-info py-2 small"><i class="bi bi-info-circle me-1"></i> Entries will be saved strictly under Financial Year <strong>{{ session.get('active_fy') }}</strong>. Dates outside this range will be rejected.</div>
+            <div class="alert alert-info py-2 small"><i class="bi bi-info-circle me-1"></i> Entries will be saved strictly under Financial Year <strong>{{ session.get('active_fy') }}</strong>.</div>
             
             <form method="POST" enctype="multipart/form-data" id="indentForm">
                 <div class="row mb-4 p-3 bg-light border rounded-3 mx-0">
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Date</label><input type="date" name="indent_date" class="form-control" value="{{ today }}" required></div>
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Department</label><select name="department_select" class="form-select" onchange="checkDept(this)" required><option value="" disabled selected>Select Dept</option>{% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}<option value="Other">Other (Add New)</option></select><input type="text" name="custom_department" class="form-control mt-2 d-none" placeholder="Enter New Dept Name" id="customDeptInput"></div>
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Indent Person</label><input type="text" name="indent_person" list="personList" class="form-control" placeholder="Type name..."><datalist id="personList">{% for p in persons %}<option value="{{ p }}">{% endfor %}</datalist></div>
-                    <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Assign To</label><select name="assigned_to" class="form-select">{% for user in users %}<option value="{{ user.name }}">{{ user.name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-3">
+                        <label class="fw-bold small text-uppercase text-muted">Assign To</label>
+                        <select name="assigned_to" class="form-select mb-2">{% for user in users %}<option value="{{ user.name }}">{{ user.name }}</option>{% endfor %}</select>
+                        <div class="form-check border p-2 bg-white rounded border-danger shadow-sm">
+                            <input class="form-check-input" type="checkbox" name="is_urgent" id="isUrgentCreate">
+                            <label class="form-check-label text-danger fw-bold small" for="isUrgentCreate"><i class="bi bi-fire"></i> Mark as URGENT</label>
+                        </div>
+                    </div>
                     
                     {% if session['role'] in ['Admin', 'SuperAdmin'] %}
                     <div class="col-md-12 mt-3 pt-3 border-top">
@@ -598,6 +723,30 @@ HTML_CREATE_MULTI = """
                     <button type="submit" class="btn btn-success px-5 fw-bold shadow-sm" id="submitBtn">Submit Entry</button>
                 </div>
             </form>
+            
+            {% if recent_indents %}
+            <div class="mt-5 border-top pt-4">
+                <h5 class="text-secondary fw-bold mb-3"><i class="bi bi-clock-history"></i> Your Last 4 Entries (Quick Edit)</h5>
+                <div class="table-responsive shadow-sm rounded">
+                    <table class="table table-sm table-bordered bg-white align-middle text-center mb-0">
+                        <thead class="table-light"><tr><th>S.No</th><th>Item</th><th>Qty</th><th>Assigned To</th><th>Status</th><th>Action</th></tr></thead>
+                        <tbody>
+                            {% for ri in recent_indents %}
+                            <tr>
+                                <td class="fw-bold">{{ ri.serial_no }}</td>
+                                <td class="text-start">{{ ri.item }} {% if ri.is_urgent %}<span class="badge bg-danger ms-1" style="font-size: 0.6rem;">URGENT</span>{% endif %}</td>
+                                <td>{{ ri.quantity }} {{ ri.unit }}</td>
+                                <td>{{ ri.assigned_to }}</td>
+                                <td><span class="badge {% if ri.approval_status == 'Approved' %}bg-success{% elif ri.approval_status == 'Pending' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">{{ ri.approval_status }}</span></td>
+                                <td><a href="{{ url_for('edit_indent', i_id=ri.id) }}" class="btn btn-sm btn-outline-primary py-0">Edit</a></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
+            
         </div>
     </div>
 </div>
@@ -621,9 +770,17 @@ HTML_EDIT = """
               {% if messages %}{% for category, message in messages %}<div class="alert alert-{{ category }} shadow-sm">{{ message }}</div>{% endfor %}{% endif %}
             {% endwith %}
             <form method="POST" enctype="multipart/form-data">
-                <div class="mb-3">
-                    <label>Serial Number (Locked)</label>
-                    <input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled>
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-6">
+                        <label>Serial Number (Locked)</label>
+                        <input type="text" value="{{ data.fy }}/{{ data.serial_no }}" class="form-control fw-bold" disabled>
+                    </div>
+                    <div class="col-md-6 pt-3">
+                        <div class="form-check border p-2 bg-light rounded border-danger text-center shadow-sm">
+                            <input class="form-check-input" type="checkbox" name="is_urgent" id="isUrgentEdit" {% if data.is_urgent %}checked{% endif %}>
+                            <label class="form-check-label text-danger fw-bold" for="isUrgentEdit"><i class="bi bi-fire"></i> Keep as URGENT Priority</label>
+                        </div>
+                    </div>
                 </div>
                 
                 <div class="row mb-3">
@@ -774,6 +931,16 @@ HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bod
         </div>
     </div>
     
+    <div class="card shadow border-primary mb-4">
+        <div class="card-header bg-primary text-white fw-bold"><i class="bi bi-magic me-2"></i>Initialize Default Database Data</div>
+        <div class="card-body">
+            <p class="small text-muted mb-2">Use this if you are starting with an empty database. It will automatically create the SuperAdmin user, default Units, default Departments, and the current Financial Year.</p>
+            <form method="POST" action="{{ url_for('initialize_db') }}">
+                <button type="submit" class="btn btn-outline-primary w-100 fw-bold">Run Database Initialization</button>
+            </form>
+        </div>
+    </div>
+    
     <hr class="my-4">
     <h5 class="text-danger fw-bold"><i class="bi bi-cloud-arrow-down-fill"></i> Database Backup & Restore (SuperAdmin Only)</h5>
     <div class="row mt-3">
@@ -816,6 +983,12 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                     {% endif %}
                 </div>
                 
+                <div class="mb-3">
+                    <label class="fw-bold">Session Auto-Logout Time (Minutes)</label>
+                    <input type="number" name="timeout_minutes" class="form-control" value="{{ user.timeout_minutes if user and user.timeout_minutes else '15' }}" required>
+                    <small class="text-muted">How long this user can stay idle before being securely logged out.</small>
+                </div>
+                
                 <div class="mb-4">
                     <label class="fw-bold">Role Title (Label Only)</label>
                     <select name="role" class="form-select">
@@ -824,6 +997,11 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                         <option value="Admin" {% if user and user.role == 'Admin' %}selected{% endif %}>Admin</option>
                         {% if session['role'] == 'SuperAdmin' %}<option value="SuperAdmin" {% if user and user.role == 'SuperAdmin' %}selected{% endif %}>SuperAdmin</option>{% endif %}
                     </select>
+                </div>
+                
+                <div class="form-check mb-4 border-bottom pb-3">
+                    <input type="checkbox" name="notifications_enabled" id="notifCheck" class="form-check-input" {% if user and user.get('notifications_enabled', True) %}checked{% elif not user %}checked{% endif %}>
+                    <label class="form-check-label fw-bold text-danger" for="notifCheck"><i class="bi bi-bell-fill"></i> Enable Urgent Push Alerts</label>
                 </div>
                 
                 <div class="mb-3 border p-3 bg-light rounded">
@@ -862,9 +1040,13 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                             </tbody>
                         </table>
                     </div>
-                    <div class="form-check mt-2">
+                    <div class="form-check mt-3">
                         <input type="checkbox" name="perm_settings_view" id="permSet" class="form-check-input" {% if p_dict['settings']['view'] %}checked{% endif %}>
                         <label class="form-check-label fw-bold" for="permSet">Access Admin Settings Page</label>
+                    </div>
+                    <div class="form-check mt-2 border-top pt-2">
+                        <input type="checkbox" name="perm_messages_send" id="permMsg" class="form-check-input" {% if p_dict.get('messages', {}).get('send') %}checked{% endif %}>
+                        <label class="form-check-label fw-bold text-primary" for="permMsg">Can Send Broadcast Messages</label>
                     </div>
                 </div>
 
@@ -898,6 +1080,7 @@ def login():
             if not perms:
                 perms = get_default_permissions(ud.get('role', 'Viewer'))
                 
+            # GUARANTEE SUPERADMIN/ADMIN ALWAYS HAVE SETTINGS ACCESS (Fail-safe)
             if ud.get('role') in ['Admin', 'SuperAdmin']:
                 if 'settings' not in perms:
                     perms['settings'] = {}
@@ -908,8 +1091,11 @@ def login():
                 'user_name': ud['name'], 
                 'role': ud['role'],
                 'permissions': perms,
+                'notifications_enabled': ud.get('notifications_enabled', True),
+                'timeout_minutes': int(ud.get('timeout_minutes', 15)),
                 'active_fy': current_fy,
-                'indent_status_filter': 'All' # Reset filter on login
+                'indent_status_filter': 'All',
+                'last_active': datetime.now().timestamp()
             })
             db.collection('login_logs').add({'username': ud['username'], 'name': ud['name'], 'role': ud['role'], 'timestamp': datetime.utcnow()})
             return redirect(url_for('dashboard'))
@@ -943,6 +1129,66 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
+
+# --- MESSAGES ROUTES ---
+@app.route('/messages')
+def messages_dashboard():
+    if 'user_id' not in session: return redirect(url_for('login'))
+    
+    user = session['user_name']
+    msgs = []
+    
+    try:
+        # Fixed Firebase Index error by grabbing everything addressed to this user and sorting in Python
+        docs = db.collection('system_messages').where('receiver', 'in', [user, 'All']).stream()
+        for doc in docs:
+            m = doc.to_dict()
+            m['id'] = doc.id
+            m.setdefault('read_by', [])
+            m['sort_time'] = m.get('timestamp').replace(tzinfo=None) if isinstance(m.get('timestamp'), datetime) else datetime.min
+            msgs.append(m)
+            
+        msgs.sort(key=lambda x: x['sort_time'], reverse=True)
+        msgs = msgs[:50] # Show only top 50 recent
+    except Exception as e:
+        print(f"Message Fetch Error: {e}")
+        
+    return render_template_string(HTML_MESSAGES, messages=msgs, session=session, system='messages')
+
+@app.route('/send_message', methods=['POST'])
+def send_message():
+    if not session.get('permissions', {}).get('messages', {}).get('send') and session.get('role') != 'SuperAdmin':
+        flash("You do not have permission to send broadcasts.", "danger")
+        return redirect(request.referrer or url_for('dashboard'))
+        
+    receiver = request.form['receiver']
+    text = request.form['message']
+    
+    db.collection('system_messages').add({
+        'sender': session['user_name'],
+        'receiver': receiver,
+        'message': text,
+        'timestamp': datetime.now(),
+        'read_by': []
+    })
+    
+    flash("Broadcast message sent successfully!", "success")
+    return redirect(request.referrer or url_for('dashboard'))
+
+@app.route('/messages/read/<m_id>')
+def read_message(m_id):
+    if 'user_id' not in session: return redirect(url_for('login'))
+    
+    user = session['user_name']
+    doc_ref = db.collection('system_messages').document(m_id)
+    doc_ref.update({
+        'read_by': firestore.ArrayUnion([user])
+    })
+    
+    return redirect(request.referrer or url_for('messages_dashboard'))
+
+
+# --- INDENT DASHBOARD ---
 @app.route('/')
 def dashboard():
     if 'user_id' not in session: return redirect(url_for('login'))
@@ -962,6 +1208,7 @@ def dashboard():
     
     per_page = 40
     indents = []
+    urgent_alerts = []
     
     docs = db.collection('indents').stream() 
     for doc in docs:
@@ -976,7 +1223,10 @@ def dashboard():
         
         if session['role'] == 'Viewer' and i.get('assigned_to') != session['user_name']: continue
         
-        # New Strict Filter Logic
+        # Build Urgent Alert List (Only if received status is pending)
+        if i.get('is_urgent') and i.get('received_status', 'Pending') == 'Pending' and i.get('assigned_to') == session['user_name']:
+            urgent_alerts.append(i)
+            
         if status_filter == 'Pending':
             if i.get('received_status') in ['Received', 'Rejected', 'Hold'] or i.get('approval_status') in ['Rejected', 'Hold']:
                 continue
@@ -1008,7 +1258,11 @@ def dashboard():
         
         indents.append(i)
         
-    indents.sort(key=lambda x: x['serial_no'], reverse=True)
+    # Sort with Urgent items at the very top IF they are still Pending Receipt
+    indents.sort(key=lambda x: (
+        1 if (x.get('is_urgent') and x.get('received_status', 'Pending') == 'Pending') else 0,
+        x['serial_no']
+    ), reverse=True)
     
     total_items = len(indents)
     start = (page - 1) * per_page
@@ -1026,7 +1280,8 @@ def dashboard():
         page=page, 
         has_next=has_next, 
         users=users,
-        current_status=status_filter
+        current_status=status_filter,
+        urgent_alerts=urgent_alerts
     )
 
 @app.route('/create', methods=['GET', 'POST'])
@@ -1068,6 +1323,8 @@ def create():
         add_if_new('indent_persons', indent_person)
 
         existing_units = get_units_list()
+        
+        is_urgent_batch = 'is_urgent' in request.form
         
         manual_start = request.form.get('manual_serial')
         if manual_start and str(manual_start).strip().isdigit() and session.get('permissions', {}).get('indent', {}).get('approve'):
@@ -1114,16 +1371,41 @@ def create():
                 'received_status': 'Pending', 
                 'created_by': session['user_name'],
                 'created_at': datetime.now(),
-                'status_reason': ''
+                'status_reason': '',
+                'is_urgent': is_urgent_batch
             }
             db.collection('indents').add(data)
+            
+            # AUTOMATIC PUSH MESSAGE IF URGENT
+            if is_urgent_batch:
+                db.collection('system_messages').add({
+                    'sender': 'System',
+                    'receiver': request.form['assigned_to'],
+                    'message': f"🔥 URGENT Indent Required: {items[i]} (Assigned by {session['user_name']})",
+                    'timestamp': datetime.now(),
+                    'read_by': []
+                })
+                
             next_sn += 1 
             
         flash(f"Entries Saved for FY {active_fy}!", "success")
-        return redirect(url_for('dashboard'))
+        return redirect(url_for('create'))
         
     users = [d.to_dict() for d in db.collection('users').stream()]
-    return render_template_string(HTML_CREATE_MULTI, users=users, unit_list=get_units_list(), departments=get_departments_list(), persons=get_people_list(), today=datetime.today().strftime('%Y-%m-%d'), session=session, system='indent')
+    
+    recent_docs = []
+    docs = db.collection('indents').where('fy', '==', active_fy).where('created_by', '==', session['user_name']).stream()
+    for doc in docs:
+        d = doc.to_dict()
+        d['id'] = doc.id
+        try: d['serial_no'] = int(d.get('serial_no', 0))
+        except: d['serial_no'] = 0
+        recent_docs.append(d)
+        
+    recent_docs.sort(key=lambda x: x['serial_no'], reverse=True)
+    recent_indents = recent_docs[:4]
+    
+    return render_template_string(HTML_CREATE_MULTI, users=users, unit_list=get_units_list(), departments=get_departments_list(), persons=get_people_list(), today=datetime.today().strftime('%Y-%m-%d'), session=session, system='indent', recent_indents=recent_indents)
 
 @app.route('/edit/<i_id>', methods=['GET', 'POST'])
 def edit_indent(i_id):
@@ -1151,6 +1433,8 @@ def edit_indent(i_id):
             'item': request.form['item'], 'reason': request.form['reason'], 'remarks': request.form.get('remarks'),
             'quantity': int(request.form['quantity']), 'unit': request.form['unit'], 'assigned_to': request.form['assigned_to']
         }
+        
+        update_data['is_urgent'] = 'is_urgent' in request.form
         
         if 'status_reason' in request.form:
             update_data['status_reason'] = request.form['status_reason']
@@ -1778,10 +2062,21 @@ def edit_user(uid):
         if session['role'] == 'Admin' and submitted_role == 'SuperAdmin':
             submitted_role = 'Admin' 
             
-        data = {'name': request.form['name'], 'username': request.form['username'], 'role': submitted_role}
+        timeout_minutes = int(request.form.get('timeout_minutes', 15))
+            
+        data = {
+            'name': request.form['name'], 
+            'username': request.form['username'], 
+            'role': submitted_role,
+            'timeout_minutes': timeout_minutes,
+            'notifications_enabled': 'notifications_enabled' in request.form
+        }
         pwd = request.form.get('password')
         
-        permissions = {'settings': {'view': 'perm_settings_view' in request.form}}
+        permissions = {
+            'settings': {'view': 'perm_settings_view' in request.form},
+            'messages': {'send': 'perm_messages_send' in request.form}
+        }
         for mod in ['indent', 'payment', 'gatepass']:
             permissions[mod] = {
                 'view': f'perm_{mod}_view' in request.form,
@@ -1897,10 +2192,20 @@ def fix_serials():
     flash(f"Successfully sorted by Date and fixed {updates_made} serial numbers for {collection_name} ({fy_name}).", "success")
     return redirect(url_for('settings'))
 
+@app.route('/settings/initialize_db', methods=['POST'])
+def initialize_db():
+    if session.get('role') != 'SuperAdmin':
+        flash("Unauthorized", "danger")
+        return redirect(url_for('settings'))
+
+    initialize_defaults()
+    flash("Database Defaults (SuperAdmin, Units, Depts, FY) verified and initialized!", "success")
+    return redirect(url_for('settings'))
+
 @app.route('/settings/backup')
 def backup_database():
     if session.get('role') != 'SuperAdmin': return "Unauthorized", 403
-    collections = ['users', 'units', 'departments', 'financial_years', 'indent_persons', 'indents', 'payments', 'gatepasses', 'counters', 'login_logs', 'companies']
+    collections = ['users', 'units', 'departments', 'financial_years', 'indent_persons', 'indents', 'payments', 'gatepasses', 'counters', 'login_logs', 'companies', 'system_messages']
     backup_data = {}
     
     for coll in collections:
@@ -1945,7 +2250,6 @@ def restore_database():
         flash(f"Restore failed: {str(e)}", "danger")
         
     return redirect(url_for('settings'))
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
