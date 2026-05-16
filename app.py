@@ -79,7 +79,7 @@ app.jinja_env.filters['fy_fmt'] = get_fy_string
 
 def get_default_permissions(role):
     p = {
-        'indent': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False, 'mark_received': False, 'mark_purchased': False},
+        'indent': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False, 'mark_received': False, 'mark_purchased': False, 'fast_entry': False},
         'payment': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
         'gatepass': {'view': False, 'create': False, 'edit': False, 'delete': False, 'approve': False},
         'settings': {'view': False},
@@ -90,6 +90,7 @@ def get_default_permissions(role):
             p[m] = {'view': True, 'create': True, 'edit': True, 'delete': True, 'approve': True}
         p['indent']['mark_received'] = True
         p['indent']['mark_purchased'] = True
+        p['indent']['fast_entry'] = True
         p['settings']['view'] = True
         p['messages']['send'] = True
     elif role == 'Editor':
@@ -125,7 +126,6 @@ def inject_global_vars():
     all_users = []
     if 'user_name' in session:
         try:
-            # FIXED FIREBASE INDEX ERROR: Fetched without order_by, done in Python instead.
             msgs = db.collection('system_messages').where('receiver', 'in', [session['user_name'], 'All']).stream()
             for m in msgs:
                 if session['user_name'] not in m.to_dict().get('read_by', []):
@@ -283,12 +283,14 @@ HTML_NAV = """
         
         <div class="d-flex align-items-center">
             
+            <!-- BROADCAST BUTTON -->
             {% if session.get('permissions', {}).get('messages', {}).get('send') or session.get('role') == 'SuperAdmin' %}
             <button class="btn btn-sm btn-outline-info me-3 fw-bold border-0" data-bs-toggle="modal" data-bs-target="#navBroadcastModal">
                 <i class="bi bi-megaphone-fill"></i> Broadcast
             </button>
             {% endif %}
             
+            <!-- MESSAGES BELL -->
             <a href="{{ url_for('messages_dashboard') }}" class="btn btn-sm btn-outline-light me-4 position-relative border-0" title="Notifications">
                 <i class="bi bi-bell-fill fs-5"></i>
                 {% if unread_msgs > 0 %}
@@ -326,6 +328,7 @@ HTML_NAV = """
     </div>
 </nav>
 
+<!-- GLOBAL BROADCAST MODAL -->
 {% if session.get('permissions', {}).get('messages', {}).get('send') or session.get('role') == 'SuperAdmin' %}
 <div class="modal fade text-dark" id="navBroadcastModal" tabindex="-1">
   <div class="modal-dialog">
@@ -466,6 +469,7 @@ HTML_DASHBOARD_INDENT = """
 <body>""" + HTML_NAV + """
 <div class="container-fluid mt-4 px-4">
 
+    <!-- URGENT ALERTS BANNER -->
     {% if session.get('notifications_enabled', True) and urgent_alerts|length > 0 %}
     <div class="alert alert-danger shadow border-danger urgent-flash mb-4 d-flex align-items-center justify-content-between">
         <div>
@@ -662,11 +666,19 @@ HTML_DASHBOARD_INDENT = """
 
 HTML_CREATE_MULTI = """
 <!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<body class="bg-light">""" + HTML_NAV + """
-<div class="container mt-4 mb-5">
+<div class="container-fluid px-4 mt-4 mb-5">
     <div class="card shadow border-0">
         <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
             <h4 class="mb-0">Create Indent (FY: {{ session.get('active_fy') }})</h4>
-            <span class="badge bg-light text-success">Max Image Size: 200 KB</span>
+            <div>
+                <span class="badge bg-light text-success me-3">Max Image Size: 200 KB</span>
+                {% if session.get('permissions', {}).get('indent', {}).get('fast_entry') %}
+                <div class="form-check form-switch d-inline-block">
+                    <input class="form-check-input" type="checkbox" id="fastModeSwitch" onchange="toggleFastMode()">
+                    <label class="form-check-label fw-bold text-warning" for="fastModeSwitch"><i class="bi bi-lightning-charge-fill"></i> Fast Mode</label>
+                </div>
+                {% endif %}
+            </div>
         </div>
         <div class="card-body bg-white">
             {% with messages = get_flashed_messages(with_categories=true) %}
@@ -676,10 +688,27 @@ HTML_CREATE_MULTI = """
             <div class="alert alert-info py-2 small"><i class="bi bi-info-circle me-1"></i> Entries will be saved strictly under Financial Year <strong>{{ session.get('active_fy') }}</strong>.</div>
             
             <form method="POST" enctype="multipart/form-data" id="indentForm">
+                <input type="hidden" name="is_fast_mode" id="isFastModeInput" value="false">
+                
                 <div class="row mb-4 p-3 bg-light border rounded-3 mx-0">
                     <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Date</label><input type="date" name="indent_date" class="form-control" value="{{ today }}" required></div>
-                    <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Department</label><select name="department_select" class="form-select" onchange="checkDept(this)" required><option value="" disabled selected>Select Dept</option>{% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}<option value="Other">Other (Add New)</option></select><input type="text" name="custom_department" class="form-control mt-2 d-none" placeholder="Enter New Dept Name" id="customDeptInput"></div>
-                    <div class="col-md-3"><label class="fw-bold small text-uppercase text-muted">Indent Person</label><input type="text" name="indent_person" list="personList" class="form-control" placeholder="Type name..."><datalist id="personList">{% for p in persons %}<option value="{{ p }}">{% endfor %}</datalist></div>
+                    
+                    <div class="col-md-3 normal-mode-only">
+                        <label class="fw-bold small text-uppercase text-muted">Department</label>
+                        <select name="department_select" class="form-select" onchange="checkDept(this)" required>
+                            <option value="" disabled selected>Select Dept</option>
+                            {% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+                            <option value="Other">Other (Add New)</option>
+                        </select>
+                        <input type="text" name="custom_department" class="form-control mt-2 d-none" placeholder="Enter New Dept Name" id="customDeptInput">
+                    </div>
+                    
+                    <div class="col-md-3 normal-mode-only">
+                        <label class="fw-bold small text-uppercase text-muted">Indent Person</label>
+                        <input type="text" name="indent_person" list="personList" class="form-control" placeholder="Type name...">
+                        <datalist id="personList">{% for p in persons %}<option value="{{ p }}">{% endfor %}</datalist>
+                    </div>
+                    
                     <div class="col-md-3">
                         <label class="fw-bold small text-uppercase text-muted">Assign To</label>
                         <select name="assigned_to" class="form-select mb-2">{% for user in users %}<option value="{{ user.name }}">{{ user.name }}</option>{% endfor %}</select>
@@ -699,19 +728,43 @@ HTML_CREATE_MULTI = """
                 </div>
                 
                 <h5 class="mb-3 text-green border-bottom pb-2">Item Details</h5>
-                <div class="table-responsive">
+                <div class="table-responsive" style="overflow-x: auto;">
                     <table class="table table-bordered align-middle" id="itemsTable">
-                        <thead class="table-light text-center"><tr><th width="20%">Item Name</th><th width="15%">Reason</th><th width="15%">Remarks</th><th width="15%">Product Image</th><th width="10%">Qty</th><th width="20%">Unit</th><th width="5%"></th></tr></thead>
+                        <thead class="table-light text-center">
+                            <tr>
+                                <th class="fast-mode-only d-none">Dept</th>
+                                <th class="fast-mode-only d-none">Person</th>
+                                <th>Item Name</th>
+                                <th>Reason</th>
+                                <th>Remarks</th>
+                                <th>Product Image</th>
+                                <th style="min-width: 80px;">Qty</th>
+                                <th>Unit</th>
+                                <th></th>
+                            </tr>
+                        </thead>
                         <tbody>
                             <tr>
-                                <td><input type="text" name="item[]" class="form-control" required placeholder="Item Name"></td>
-                                <td><input type="text" name="reason[]" class="form-control" placeholder="Why needed?"></td>
-                                <td><input type="text" name="remarks[]" class="form-control" placeholder="Notes"></td>
+                                <td class="fast-mode-only d-none">
+                                    <select name="row_dept_select[]" class="form-select form-select-sm" onchange="checkRowDept(this)">
+                                        <option value="" disabled selected>Dept</option>
+                                        {% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+                                        <option value="Other">Other</option>
+                                    </select>
+                                    <input type="text" name="row_custom_dept[]" class="form-control form-control-sm mt-1 d-none row-custom-dept" placeholder="New Dept">
+                                </td>
+                                <td class="fast-mode-only d-none">
+                                    <input type="text" name="row_indent_person[]" list="personList" class="form-control form-control-sm" placeholder="Person Name">
+                                </td>
+                                
+                                <td><input type="text" name="item[]" class="form-control form-control-sm" required placeholder="Item Name"></td>
+                                <td><input type="text" name="reason[]" class="form-control form-control-sm" placeholder="Why needed?"></td>
+                                <td><input type="text" name="remarks[]" class="form-control form-control-sm" placeholder="Notes"></td>
                                 <td><input type="file" name="product_image[]" class="form-control form-control-sm" accept="image/*" onchange="validateFileSize(this)"></td>
-                                <td><input type="number" name="quantity[]" class="form-control text-center" required></td>
+                                <td><input type="number" name="quantity[]" class="form-control form-control-sm text-center" required></td>
                                 <td>
-                                    <select name="unit[]" class="form-select unit-select" onchange="checkUnit(this)">{% for u in unit_list %}<option value="{{ u }}">{{ u }}</option>{% endfor %}<option value="Other">Other</option></select>
-                                    <input type="text" name="custom_unit[]" class="form-control mt-1 d-none custom-unit" placeholder="Unit">
+                                    <select name="unit[]" class="form-select form-select-sm unit-select" onchange="checkUnit(this)">{% for u in unit_list %}<option value="{{ u }}">{{ u }}</option>{% endfor %}<option value="Other">Other</option></select>
+                                    <input type="text" name="custom_unit[]" class="form-control form-control-sm mt-1 d-none custom-unit" placeholder="Unit">
                                 </td>
                                 <td class="text-center"><button type="button" class="btn btn-outline-danger btn-sm rounded-circle" onclick="removeRow(this)"><i class="bi bi-x-lg"></i></button></td>
                             </tr>
@@ -719,7 +772,7 @@ HTML_CREATE_MULTI = """
                     </table>
                 </div>
                 <div class="d-flex justify-content-between mt-3">
-                    <button type="button" class="btn btn-outline-primary" onclick="addRow()"><i class="bi bi-plus-circle me-1"></i> Add Another Item</button>
+                    <button type="button" class="btn btn-outline-primary fw-bold" onclick="addRow()"><i class="bi bi-plus-circle me-1"></i> Add Another Item</button>
                     <button type="submit" class="btn btn-success px-5 fw-bold shadow-sm" id="submitBtn">Submit Entry</button>
                 </div>
             </form>
@@ -729,11 +782,12 @@ HTML_CREATE_MULTI = """
                 <h5 class="text-secondary fw-bold mb-3"><i class="bi bi-clock-history"></i> Your Last 4 Entries (Quick Edit)</h5>
                 <div class="table-responsive shadow-sm rounded">
                     <table class="table table-sm table-bordered bg-white align-middle text-center mb-0">
-                        <thead class="table-light"><tr><th>S.No</th><th>Item</th><th>Qty</th><th>Assigned To</th><th>Status</th><th>Action</th></tr></thead>
+                        <thead class="table-light"><tr><th>S.No</th><th>Dept / Person</th><th>Item</th><th>Qty</th><th>Assigned To</th><th>Status</th><th>Action</th></tr></thead>
                         <tbody>
                             {% for ri in recent_indents %}
                             <tr>
                                 <td class="fw-bold">{{ ri.serial_no }}</td>
+                                <td class="text-start small">{{ ri.department }}<br><span class="text-muted">{{ ri.indent_person }}</span></td>
                                 <td class="text-start">{{ ri.item }} {% if ri.is_urgent %}<span class="badge bg-danger ms-1" style="font-size: 0.6rem;">URGENT</span>{% endif %}</td>
                                 <td>{{ ri.quantity }} {{ ri.unit }}</td>
                                 <td>{{ ri.assigned_to }}</td>
@@ -750,11 +804,68 @@ HTML_CREATE_MULTI = """
         </div>
     </div>
 </div>
+
 <script>
+    function toggleFastMode() {
+        var isFast = document.getElementById('fastModeSwitch').checked;
+        document.getElementById('isFastModeInput').value = isFast ? 'true' : 'false';
+        
+        var normalCols = document.querySelectorAll('.normal-mode-only');
+        var topDept = document.querySelector('select[name="department_select"]');
+        
+        if(isFast) {
+            normalCols.forEach(e => e.classList.add('d-none'));
+            if(topDept) topDept.required = false;
+        } else {
+            normalCols.forEach(e => e.classList.remove('d-none'));
+            if(topDept) topDept.required = true;
+        }
+        
+        var fastCols = document.querySelectorAll('.fast-mode-only');
+        var rowDepts = document.querySelectorAll('select[name="row_dept_select[]"]');
+        
+        if(isFast) {
+            fastCols.forEach(e => e.classList.remove('d-none'));
+            rowDepts.forEach(e => e.required = true);
+        } else {
+            fastCols.forEach(e => e.classList.add('d-none'));
+            rowDepts.forEach(e => e.required = false);
+        }
+    }
+
     function checkDept(selectObj){ var customInput = document.getElementById('customDeptInput'); if(selectObj.value === 'Other'){ customInput.classList.remove('d-none'); customInput.required = true; customInput.focus(); } else { customInput.classList.add('d-none'); customInput.required = false; } }
+    
+    function checkRowDept(selectObj) {
+        var customInput = selectObj.nextElementSibling;
+        if(selectObj.value === 'Other') {
+            customInput.classList.remove('d-none'); customInput.required = true; customInput.focus();
+        } else {
+            customInput.classList.add('d-none'); customInput.required = false;
+        }
+    }
+
     function checkUnit(selectObj){ var customInput = selectObj.nextElementSibling; if(selectObj.value === 'Other'){ customInput.classList.remove('d-none'); customInput.required = true; } else { customInput.classList.add('d-none'); customInput.required = false; } }
-    function addRow(){ var table = document.getElementById("itemsTable").getElementsByTagName('tbody')[0]; var newRow = table.rows[0].cloneNode(true); var inputs = newRow.getElementsByTagName('input'); for(var i=0; i<inputs.length; i++) inputs[i].value = ''; newRow.getElementsByClassName('custom-unit')[0].classList.add('d-none'); table.appendChild(newRow); }
+    
+    function addRow(){ 
+        var table = document.getElementById("itemsTable").getElementsByTagName('tbody')[0]; 
+        var newRow = table.rows[0].cloneNode(true); 
+        
+        var inputs = newRow.getElementsByTagName('input'); 
+        for(var i=0; i<inputs.length; i++) inputs[i].value = ''; 
+        
+        newRow.getElementsByClassName('custom-unit')[0].classList.add('d-none'); 
+        
+        var customDept = newRow.querySelector('.row-custom-dept');
+        if(customDept) customDept.classList.add('d-none');
+        
+        var selects = newRow.getElementsByTagName('select');
+        for(var i=0; i<selects.length; i++) selects[i].selectedIndex = 0;
+        
+        table.appendChild(newRow); 
+    }
+    
     function removeRow(btn){ var table = document.getElementById("itemsTable").getElementsByTagName('tbody')[0]; if(table.rows.length > 1) btn.closest('tr').remove(); }
+    
     $('#indentForm').on('submit', function() { $('#submitBtn').prop('disabled', true).html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Saving...'); });
 </script>
 </body></html>
@@ -910,7 +1021,14 @@ HTML_SETTINGS = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bod
 <div class="tab-pane fade show active" id="fys"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-warning text-dark fw-bold">Create New Financial Year</div><div class="card-body"><form method="POST" action="{{ url_for('add_fy') }}"><div class="mb-2"><label>Format: YYYY-YY (e.g. 2026-27)</label><input type="text" name="fy_name" class="form-control" placeholder="2026-27" required></div><button class="btn btn-warning w-100" type="submit">Create FY</button></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Available Financial Years</div><div class="card-body"><table class="table table-sm"><thead><tr><th>FY Name</th><th>Action</th></tr></thead><tbody>{% for fy in available_fys %}<tr><td class="fw-bold">{{ fy }}</td><td><a href="{{ url_for('delete_fy', fy_name=fy) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Caution: Deleting this removes it from the dropdown. Records will not be deleted, but they may become inaccessible from the UI. Continue?')">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
 <div class="tab-pane fade" id="units"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-secondary text-white">Add New Unit</div><div class="card-body"><form method="POST" action="{{ url_for('add_unit') }}"><div class="input-group"><input type="text" name="unit_name" class="form-control" placeholder="e.g. PACKET" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Units</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Unit Name</th><th>Action</th></tr></thead><tbody>{% for u in units %}<tr><td>{{ u.name }}</td><td><a href="{{ url_for('delete_unit', uid=u.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
 <div class="tab-pane fade" id="companies"><div class="row"><div class="col-md-5"><div class="card shadow"><div class="card-header bg-primary text-white">Add New Company</div><div class="card-body"><form method="POST" action="{{ url_for('add_company') }}"><div class="input-group"><input type="text" name="company_name" class="form-control" placeholder="e.g. ABC CORP" required><button class="btn btn-success" type="submit">Add</button></div></form></div></div></div><div class="col-md-7"><div class="card shadow"><div class="card-header">Existing Companies</div><div class="card-body"><table class="table table-sm"><thead><tr><th>Company Name</th><th>Action</th></tr></thead><tbody>{% for c in companies %}<tr><td>{{ c.name }}</td><td><a href="{{ url_for('delete_company', cid=c.id) }}" class="btn btn-sm btn-outline-danger">Delete</a></td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
-<div class="tab-pane fade" id="users"><div class="d-flex justify-content-end mb-2"><a href="{{ url_for('edit_user', uid='new') }}" class="btn btn-success">+ Create User</a></div><div class="card shadow"><div class="card-body"><table class="table"><thead class="table-dark"><tr><th>Name</th><th>Username</th><th>Role</th><th>Password</th><th>Actions</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user.name }}</td><td>{{ user.username }}</td><td>{{ user.role }}</td><td class="font-monospace">{% if session['role'] == 'SuperAdmin' %}<span class="text-danger">{{ user.password }}</span>{% else %}******{% endif %}</td><td><a href="{{ url_for('edit_user', uid=user.id) }}" class="btn btn-sm btn-primary">Edit</a>{% if session['role'] == 'SuperAdmin' %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% elif session['role'] == 'Admin' and user.role not in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div><div class="tab-pane fade" id="logs"><div class="card shadow"><div class="card-header bg-info text-white">Recent Logins (Last 50)</div><div class="card-body">{% if session['role'] == 'SuperAdmin' %}<table class="table table-striped table-sm"><thead><tr><th>Time</th><th>Name</th><th>Username</th><th>Role</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.timestamp | datetime_fmt }}</td><td>{{ log.name }}</td><td>{{ log.username }}</td><td>{{ log.role }}</td></tr>{% else %}<tr><td colspan="4" class="text-center">No logs found</td></tr>{% endfor %}</tbody></table>{% else %}<div class="alert alert-warning text-center">Only SuperAdmin can view logs.</div>{% endif %}</div></div></div>
+<div class="tab-pane fade" id="users"><div class="d-flex justify-content-between mb-2">
+    {% if session['role'] == 'SuperAdmin' %}
+    <form method="POST" action="{{ url_for('enable_fast_entry_all') }}" class="d-inline-block">
+        <button type="submit" class="btn btn-warning fw-bold shadow-sm" onclick="return confirm('Enable Fast Mode for ALL users?')"><i class="bi bi-lightning-charge-fill"></i> Enable Fast Mode For All</button>
+    </form>
+    {% else %}<div></div>{% endif %}
+    <a href="{{ url_for('edit_user', uid='new') }}" class="btn btn-success">+ Create User</a>
+</div><div class="card shadow"><div class="card-body"><table class="table"><thead class="table-dark"><tr><th>Name</th><th>Username</th><th>Role</th><th>Password</th><th>Actions</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user.name }}</td><td>{{ user.username }}</td><td>{{ user.role }}</td><td class="font-monospace">{% if session['role'] == 'SuperAdmin' %}<span class="text-danger">{{ user.password }}</span>{% else %}******{% endif %}</td><td><a href="{{ url_for('edit_user', uid=user.id) }}" class="btn btn-sm btn-primary">Edit</a>{% if session['role'] == 'SuperAdmin' %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% elif session['role'] == 'Admin' and user.role not in ['Admin', 'SuperAdmin'] %}<a href="{{ url_for('delete_user', uid=user.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div><div class="tab-pane fade" id="logs"><div class="card shadow"><div class="card-header bg-info text-white">Recent Logins (Last 50)</div><div class="card-body">{% if session['role'] == 'SuperAdmin' %}<table class="table table-striped table-sm"><thead><tr><th>Time</th><th>Name</th><th>Username</th><th>Role</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.timestamp | datetime_fmt }}</td><td>{{ log.name }}</td><td>{{ log.username }}</td><td>{{ log.role }}</td></tr>{% else %}<tr><td colspan="4" class="text-center">No logs found</td></tr>{% endfor %}</tbody></table>{% else %}<div class="alert alert-warning text-center">Only SuperAdmin can view logs.</div>{% endif %}</div></div></div>
 <div class="tab-pane fade" id="maintenance">
     <div class="card shadow border-danger mb-4">
         <div class="card-header bg-danger text-white fw-bold"><i class="bi bi-exclamation-triangle-fill me-2"></i>Database Maintenance & Serial Fix</div>
@@ -1018,6 +1136,7 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                                     <th>Approve</th>
                                     <th>Receive</th>
                                     <th>Purchase</th>
+                                    <th class="text-warning">Fast Entry</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1032,8 +1151,9 @@ HTML_EDIT_USER = """<!DOCTYPE html><html lang="en">""" + HTML_BASE_HEAD + """<bo
                                     {% if mod == 'indent' %}
                                         <td><input type="checkbox" name="perm_{{mod}}_mark_received" class="form-check-input border-primary" {% if p_dict[mod].get('mark_received') %}checked{% endif %}></td>
                                         <td><input type="checkbox" name="perm_{{mod}}_mark_purchased" class="form-check-input border-primary" {% if p_dict[mod].get('mark_purchased') %}checked{% endif %}></td>
+                                        <td><input type="checkbox" name="perm_{{mod}}_fast_entry" class="form-check-input border-warning" {% if p_dict[mod].get('fast_entry') %}checked{% endif %}></td>
                                     {% else %}
-                                        <td><span class="text-muted">-</span></td><td><span class="text-muted">-</span></td>
+                                        <td><span class="text-muted">-</span></td><td><span class="text-muted">-</span></td><td><span class="text-muted">-</span></td>
                                     {% endif %}
                                 </tr>
                                 {% endfor %}
@@ -1314,13 +1434,20 @@ def create():
         units = request.form.getlist('unit[]')
         custom_units = request.form.getlist('custom_unit[]')
         
-        dept_select = request.form.get('department_select')
-        custom_dept = request.form.get('custom_department')
-        final_dept = custom_dept.upper() if dept_select == 'Other' and custom_dept else dept_select
-        add_if_new('departments', final_dept)
+        is_fast_mode = request.form.get('is_fast_mode') == 'true'
+        
+        if not is_fast_mode:
+            dept_select = request.form.get('department_select')
+            custom_dept = request.form.get('custom_department')
+            final_dept = custom_dept.upper() if dept_select == 'Other' and custom_dept else dept_select
+            add_if_new('departments', final_dept)
 
-        indent_person = request.form.get('indent_person')
-        add_if_new('indent_persons', indent_person)
+            indent_person = request.form.get('indent_person')
+            add_if_new('indent_persons', indent_person)
+        else:
+            row_dept_selects = request.form.getlist('row_dept_select[]')
+            row_custom_depts = request.form.getlist('row_custom_dept[]')
+            row_indent_persons = request.form.getlist('row_indent_person[]')
 
         existing_units = get_units_list()
         
@@ -1343,6 +1470,17 @@ def create():
                     db.collection('units').add({'name': final_unit})
                     existing_units.append(final_unit)
                     
+            if is_fast_mode:
+                ds = row_dept_selects[i] if i < len(row_dept_selects) else ''
+                cd = row_custom_depts[i] if i < len(row_custom_depts) else ''
+                current_dept = cd.upper() if ds == 'Other' and cd else ds
+                add_if_new('departments', current_dept)
+                current_person = row_indent_persons[i] if i < len(row_indent_persons) else ''
+                add_if_new('indent_persons', current_person)
+            else:
+                current_dept = final_dept
+                current_person = indent_person
+                    
             img_data = ""
             if i < len(images) and images[i].filename != '':
                 try:
@@ -1357,8 +1495,8 @@ def create():
                 'fy': active_fy, 
                 'serial_no': next_sn,
                 'indent_date': input_date_str, 
-                'department': final_dept,
-                'indent_person': indent_person, 
+                'department': current_dept,
+                'indent_person': current_person, 
                 'assigned_to': request.form['assigned_to'], 
                 'item': items[i], 
                 'reason': reasons[i],
@@ -2048,7 +2186,6 @@ def edit_user(uid):
         
     user_data = None if uid == 'new' else db.collection('users').document(uid).get().to_dict()
     
-    # Prevent Admins from editing SuperAdmin users
     if session['role'] == 'Admin' and user_data and user_data.get('role') == 'SuperAdmin':
         flash("Admins cannot edit SuperAdmin profiles.", "danger")
         return redirect(url_for('settings'))
@@ -2057,7 +2194,6 @@ def edit_user(uid):
     p_dict = user_data.get('permissions') if user_data and 'permissions' in user_data else get_default_permissions(current_role)
 
     if request.method == 'POST':
-        # Ensure Admin cannot create a new SuperAdmin
         submitted_role = request.form['role']
         if session['role'] == 'Admin' and submitted_role == 'SuperAdmin':
             submitted_role = 'Admin' 
@@ -2088,6 +2224,7 @@ def edit_user(uid):
             if mod == 'indent':
                 permissions[mod]['mark_received'] = 'perm_indent_mark_received' in request.form
                 permissions[mod]['mark_purchased'] = 'perm_indent_mark_purchased' in request.form
+                permissions[mod]['fast_entry'] = 'perm_indent_fast_entry' in request.form
                 
         data['permissions'] = permissions
 
@@ -2097,7 +2234,6 @@ def edit_user(uid):
         else:
             if session['role'] == 'SuperAdmin' and pwd: 
                 data['password'] = pwd
-            # Admin can change password of lower roles
             if session['role'] == 'Admin' and pwd and current_role != 'SuperAdmin':
                 data['password'] = pwd
                 
@@ -2105,6 +2241,26 @@ def edit_user(uid):
         return redirect(url_for('settings'))
         
     return render_template_string(HTML_EDIT_USER, uid=uid, user=user_data, p_dict=p_dict, session=session, system='indent')
+
+@app.route('/settings/enable_fast_entry_all', methods=['POST'])
+def enable_fast_entry_all():
+    if session.get('role') != 'SuperAdmin': return redirect(url_for('settings'))
+    users = db.collection('users').stream()
+    batch = db.batch()
+    count = 0
+    for u in users:
+        ud = u.to_dict()
+        perms = ud.get('permissions', get_default_permissions(ud.get('role', 'Viewer')))
+        if 'indent' not in perms: perms['indent'] = {}
+        perms['indent']['fast_entry'] = True
+        batch.update(u.reference, {'permissions': perms})
+        count += 1
+        if count % 400 == 0:
+            batch.commit()
+            batch = db.batch()
+    batch.commit()
+    flash("Fast Entry Mode enabled for all users.", "success")
+    return redirect(url_for('settings'))
 
 @app.route('/users/delete/<uid>')
 def delete_user(uid):
@@ -2250,6 +2406,7 @@ def restore_database():
         flash(f"Restore failed: {str(e)}", "danger")
         
     return redirect(url_for('settings'))
+    
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
